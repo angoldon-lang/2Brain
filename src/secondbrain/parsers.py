@@ -1,8 +1,9 @@
 """Estrazione testo: ritorna lista di (pagina, testo). Pagina = pagina PDF / foglio / slide."""
 from __future__ import annotations
-import email, email.policy, html, logging, re, zipfile
+import email, email.policy, html, logging, re, warnings, zipfile
 from pathlib import Path
 
+warnings.filterwarnings("ignore", module="openpyxl")
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 TEXT_EXT = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".rtf"}
@@ -39,8 +40,21 @@ def parse_docx_raw(path: Path) -> list[tuple[int, str]]:
     return [(1, html.unescape(re.sub(r"<[^>]+>", "", xml)))]
 
 
+def _check_container(path: Path, ext: str) -> None:
+    """Spiega perché un file OOXML non è leggibile, invece del generico 'not a zip file'."""
+    if ext not in {".docx", ".xlsx", ".pptx"}:
+        return
+    with open(path, "rb") as f:
+        head = f.read(8)
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        raise ValueError("file protetto da password/IRM o in formato Office 97-2003 (OLE), non leggibile")
+    if not head.startswith(b"PK"):
+        raise ValueError("non è un file Office valido (corrotto, incompleto o rinominato)")
+
+
 def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
+    _check_container(path, ext)
     if ext == ".pdf":
         from pypdf import PdfReader
         r = PdfReader(str(path))

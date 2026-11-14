@@ -77,3 +77,12 @@ def test_docx_broken_relationship_fallback(tmp_path):
                     b'<Relationship Id="rIdX" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="NULL"/></Relationships>')
             zo.writestr(it, data)
     assert "9.800" in parse(bad)[0][1]
+
+
+def test_clear_error_for_encrypted_office(tmp_path):
+    import pytest
+    from secondbrain.parsers import parse
+    f = tmp_path / "x.xlsx"
+    f.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"0" * 50)
+    with pytest.raises(ValueError, match="protetto"):
+        parse(f)
