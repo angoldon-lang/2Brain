@@ -1,15 +1,17 @@
 from __future__ import annotations
-import functools, json, mimetypes, shutil, subprocess, sys, threading
+import functools, json, re, mimetypes, shutil, subprocess, sys, threading
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from types import SimpleNamespace
 
 from . import __version__
 from .db import Store
 from .embed import OllamaEmbedder
 from .chunk import locate
 from .indexer import Indexer
+from .m365 import M365Auth
 from .parsers import parse
 from .llm import build_messages, stream_chat
 from .search import Searcher
@@ -28,6 +30,54 @@ def _parsed(path: str, mtime: float):
     return parse(Path(path))
 
 
+class SourceReq(BaseModel):
+    type: str
+    path: str | None = None
+    name: str | None = None
+    months: int = 12
+
+
+class M365Req(BaseModel):
+    client_id: str
+    tenant: str = "organizations"
+
+
+def detect_cloud():
+    """OneDrive/SharePoint sincronizzati dal client OneDrive (macOS: ~/Library/CloudStorage)."""
+    out, seen = [], set()
+
+    def add(label, p, group):
+        rp = str(p.resolve())
+        if rp not in seen:
+            seen.add(rp)
+            out.append({"label": label, "path": str(p), "group": group})
+    base = Path.home() / "Library" / "CloudStorage"
+    if base.exists():
+        for d in sorted(base.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            if d.name.startswith("OneDrive-SharedLibraries"):
+                for c in sorted(d.iterdir()):
+                    if c.is_dir() and not c.name.startswith("."):
+                        add(f"SharePoint · {c.name}", c, "sharepoint")
+            elif d.name.startswith("OneDrive"):
+                add(d.name.replace("OneDrive-", "OneDrive · ", 1), d, "onedrive")
+    for d in sorted(Path.home().glob("OneDrive*")):
+        if d.is_dir():
+            add(d.name, d, "onedrive")
+    return out
+
+
+def pick_path(kind: str):
+    """Finestra nativa di macOS per scegliere cartella/file. None se annullato."""
+    if sys.platform != "darwin":
+        raise HTTPException(501, "selettore disponibile solo su macOS: inserisci il percorso a mano")
+    what = 'choose folder with prompt "Scegli la cartella da indicizzare"' if kind == "folder" \
+        else 'choose file with prompt "Scegli l\'archivio Outlook (.pst)"'
+    r = subprocess.run(["osascript", "-e", f"POSIX path of ({what})"], capture_output=True, text=True, timeout=600)
+    return r.stdout.strip().rstrip("/") or None if r.returncode == 0 else None
+
+
 class AskReq(BaseModel):
     question: str
     history: list[dict] = []
@@ -39,8 +89,14 @@ def create_app(cfg, embedder="auto") -> FastAPI:
     if embedder == "auto":
         e = OllamaEmbedder(cfg.ollama_host, cfg.embed_model)
         embedder = e if e.available() else None
+    if not store.get_setting("seeded"):     # sorgenti di config.toml: importate una sola volta, se esistono
+        for src in cfg.sources:
+            if src.path.exists():
+                store.add_source(src.name, src.type, src.path, src.options)
+        store.set_setting("seeded", "1")
+    m365 = M365Auth(store, cfg.data_dir)
     searcher = Searcher(store, embedder)
-    indexer = Indexer(cfg, store, embedder, on_done=searcher.reload)
+    indexer = Indexer(cfg, store, embedder, on_done=searcher.reload, ctx=SimpleNamespace(m365=m365))
     app = FastAPI(title="SecondBrain")
     soffice, convert_lock = find_soffice(), threading.Lock()
 
@@ -49,9 +105,9 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         stats = store.source_stats()
         live = indexer.status["sources"]
         sources = []
-        for s in cfg.sources:
+        for s in store.sources():
             st = stats.get(s.name, {"documents": 0, "chunks": 0, "last_indexed": None, "kinds": {}})
-            sources.append({"name": s.name, "type": s.type, "path": str(s.path), "issues": st.get("issues", 0),
+            sources.append({"name": s.name, "type": s.type, "path": s.display(), "issues": st.get("issues", 0),
                             **{k: st[k] for k in ("documents", "chunks", "last_indexed", "kinds")},
                             "live": live.get(s.name)})
         return {"version": __version__, **store.stats(), "semantic": embedder is not None,
@@ -60,6 +116,80 @@ def create_app(cfg, embedder="auto") -> FastAPI:
                 "indexing": {"running": indexer.status["running"], "current": indexer.status["current"],
                              "started_at": indexer.status["started_at"]},
                 "sources": sources}
+
+    # --- gestione sorgenti ----------------------------------------------------
+    @app.get("/api/sources")
+    def list_sources():
+        return [{"name": s.name, "type": s.type, "path": s.display()} for s in store.sources()]
+
+    @app.get("/api/sources/detect")
+    def detect():
+        have = {str(s.path) for s in store.sources()}
+        return [{**d, "added": d["path"] in have} for d in detect_cloud()]
+
+    @app.post("/api/sources/pick")
+    def pick(kind: str):
+        return {"path": pick_path(kind)}
+
+    def _unique(name):
+        name = name.replace("/", "-")
+        names = {s.name for s in store.sources()}
+        n, i = name, 2
+        while n in names:
+            n, i = f"{name} ({i})", i + 1
+        return n
+
+    @app.post("/api/sources")
+    def add_source(req: SourceReq):
+        if req.type in ("folder", "pst"):
+            p = Path((req.path or "").strip()).expanduser()
+            if req.type == "folder" and not p.is_dir():
+                raise HTTPException(400, f"cartella non trovata: {p}")
+            if req.type == "pst" and (not p.is_file() or p.suffix.lower() != ".pst"):
+                raise HTTPException(400, "scegli un file .pst esistente")
+            if any(s.path == p for s in store.sources()):
+                raise HTTPException(409, "questa sorgente è già presente")
+            name = _unique((req.name or p.stem if req.type == "pst" else req.name or p.name).strip() or "Sorgente")
+            store.add_source(name, req.type, p)
+        elif req.type == "outlook365":
+            if m365.info()["state"] != "signed_in":
+                raise HTTPException(400, "accedi prima a Microsoft 365")
+            if any(s.type == "outlook365" for s in store.sources()):
+                raise HTTPException(409, "la posta Microsoft 365 è già presente")
+            name = _unique(req.name or "Outlook 365")
+            store.add_source(name, "outlook365", "", {"months": max(1, min(req.months, 120))})
+        else:
+            raise HTTPException(400, "tipo non supportato")
+        indexer.start()
+        return {"name": name, "indexing": True}
+
+    @app.delete("/api/sources/{name}")
+    def remove_source(name: str):
+        if indexer.status["running"]:
+            raise HTTPException(409, "attendi la fine dell'indicizzazione in corso")
+        store.remove_source(name)
+        searcher.reload()
+        return {"ok": True}
+
+    @app.get("/api/m365")
+    def m365_info():
+        return m365.info()
+
+    @app.post("/api/m365/login")
+    def m365_login(req: M365Req):
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", req.client_id.strip()):
+            raise HTTPException(400, "l'ID applicazione ha il formato 00000000-0000-0000-0000-000000000000")
+        m365.configure(req.client_id, req.tenant)
+        try:
+            m365.login()
+        except Exception as e:
+            raise HTTPException(400, str(e))
+        return m365.info()
+
+    @app.post("/api/m365/logout")
+    def m365_logout():
+        m365.logout()
+        return {"ok": True}
 
     @app.get("/api/documents")
     def documents(source: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0):

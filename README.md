@@ -16,15 +16,26 @@ nano config.toml              # indica le tue sorgenti
 . .venv/bin/activate && secondbrain serve   # http://127.0.0.1:8765
 ```
 
-## Sorgenti
-| Sorgente | Come | Stato |
+## Sorgenti (si gestiscono dalla scheda **Sorgenti**)
+| Sorgente | Come si aggiunge | Stato |
 |---|---|---|
-| Disco locale | `type="folder"` | ✅ pdf, docx, xlsx, pptx, txt/md/csv, html, eml, msg |
-| OneDrive / SharePoint | sincronizzati col client OneDrive → appaiono in `~/Library/CloudStorage/`, indicizzati come cartelle (nessuna autenticazione da gestire). I file "solo online" sono saltati. | ✅ |
-| Outlook PST | `type="pst"`, convertito con `readpst` in cache, re-import se il PST cambia | ✅ (allegati: solo nomi) |
-| Outlook/Mail 365 live, Teams chat | Microsoft Graph (device-code flow, token in Keychain) | ⏳ fase 1b |
+| OneDrive / SharePoint | Rilevati in automatico (sincronizzati dall'app OneDrive, in `~/Library/CloudStorage/`): un clic su «Aggiungi». I file «solo online» sono saltati. | ✅ |
+| Cartella del Mac | «Scegli una cartella…» (finestra nativa di Finder) o percorso a mano | ✅ |
+| Outlook PST | «Scegli un file .pst…» (richiede `brew install libpst`) | ✅ |
+| Outlook 365 (posta online) | Accesso Microsoft dalla scheda (codice da inserire su microsoft.com/devicelogin), sola lettura, ultimi N mesi, esclusi Eliminata e Posta indesiderata. «Apri in Outlook» dal messaggio. | ✅ (provato con server Graph simulato) |
+| Teams, SharePoint senza sincronizzazione | stessa app Entra, permessi aggiuntivi | ⏳ |
 
-Il "nuovo Outlook" per Mac non usa PST: per la posta 365 serve Graph (fase 1b).
+Le sorgenti di `config.toml` sono importate **una sola volta** al primo avvio dopo l'aggiornamento (solo se i percorsi esistono); poi si gestiscono dall'interfaccia. «Rimuovi» toglie la sorgente e il suo indice, mai i file originali.
+
+### Outlook 365: setup una tantum (serve registrare un'app in Microsoft Entra)
+Microsoft non permette a un'app di leggere la posta senza un'«app registrata» dell'azienda. In 5 minuti:
+1. entra.microsoft.com → Applicazioni → Registrazioni app → **Nuova registrazione** (nome «SecondBrain», «Solo questa directory»; Redirect URI tipo *Client pubblico/nativo*: `https://login.microsoftonline.com/common/oauth2/nativeclient`).
+2. **Autenticazione** → «Consenti flussi client pubblici» = Sì.
+3. **Autorizzazioni API** → Microsoft Graph → Delegate → `Mail.Read` (se richiesto, consenso dell'amministratore).
+4. Copia «ID applicazione (client)» e «ID directory (tenant)» nella scheda Sorgenti → **Accedi con Microsoft**.
+
+Se l'IT blocca la registrazione di app o il consenso, l'accesso alla posta 365 non è possibile: in quel caso resta l'esportazione in PST.
+Il token resta in `~/.secondbrain/m365_token.json` (permessi 600). «Disconnetti» lo cancella.
 
 ## Ricerca
 Ibrida: BM25 (SQLite FTS5) + embedding `bge-m3`, fusi con RRF; max 2 frammenti per documento.

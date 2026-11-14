@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sqlite3, threading, time
+import json, sqlite3, threading, time
 import numpy as np
 
 SCHEMA = """
@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS issues(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, started REAL, finished REAL, state TEXT, scanned INTEGER DEFAULT 0,
   new INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, note TEXT);
+CREATE TABLE IF NOT EXISTS sources(
+  name TEXT PRIMARY KEY, type TEXT NOT NULL, path TEXT, options TEXT, added REAL);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 """
@@ -31,6 +34,8 @@ class Store:
             self.db.execute("ALTER TABLE documents ADD COLUMN indexed_at REAL")
         if "pv" not in cols:          # versione del parser con cui è stato letto il file
             self.db.execute("ALTER TABLE documents ADD COLUMN pv INTEGER DEFAULT 1")
+        if "web_url" not in cols:     # link "Apri in Outlook" per i messaggi 365
+            self.db.execute("ALTER TABLE documents ADD COLUMN web_url TEXT")
         self.db.execute("UPDATE runs SET finished=started, state='interrotta' WHERE finished IS NULL")
         self.db.commit()
         self.lock = threading.RLock()
@@ -49,8 +54,8 @@ class Store:
     def add_doc(self, d: dict, chunks: list[tuple[int, int, str, np.ndarray | None]]):
         with self.lock:
             cur = self.db.execute(
-                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at,pv) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"], time.time(), d.get("pv", 1)))
+                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at,pv,web_url) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"], time.time(), d.get("pv", 1), d.get("web_url")))
             did = cur.lastrowid
             for idx, page, text, emb in chunks:
                 c = self.db.execute("INSERT INTO chunks(doc_id,idx,page,text,emb) VALUES(?,?,?,?,?)",
@@ -176,3 +181,37 @@ class Store:
     def runs(self, limit=15):
         with self.lock:
             return [dict(r) for r in self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
+
+    # --- sorgenti e impostazioni ------------------------------------------
+    def sources(self):
+        from .config import Source
+        from pathlib import Path
+        with self.lock:
+            rows = self.db.execute("SELECT name,type,path,options FROM sources ORDER BY added, name").fetchall()
+        return [Source(r["name"], r["type"], Path(r["path"] or ""), json.loads(r["options"] or "{}")) for r in rows]
+
+    def add_source(self, name, type_, path="", options=None):
+        with self.lock:
+            self.db.execute("INSERT INTO sources(name,type,path,options,added) VALUES(?,?,?,?,?)",
+                            (name, type_, str(path), json.dumps(options or {}), time.time()))
+            self.db.commit()
+
+    def remove_source(self, name):
+        """Toglie la sorgente e TUTTO ciò che ne è stato indicizzato (i file originali non si toccano)."""
+        with self.lock:
+            self.db.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT c.id FROM chunks c "
+                            "JOIN documents d ON d.id=c.doc_id WHERE d.source=?)", (name,))
+            self.db.execute("DELETE FROM documents WHERE source=?", (name,))
+            self.db.execute("DELETE FROM issues WHERE source=?", (name,))
+            self.db.execute("DELETE FROM sources WHERE name=?", (name,))
+            self.db.commit()
+
+    def get_setting(self, key, default=None):
+        with self.lock:
+            r = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return r[0] if r else default
+
+    def set_setting(self, key, value):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (key, value))
+            self.db.commit()

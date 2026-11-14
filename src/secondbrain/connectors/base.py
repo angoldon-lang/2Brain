@@ -15,3 +15,4 @@ class RawDoc:
     mtime: float
     size: int
     load: Callable[[], list[tuple[int, str]]]
+    web_url: str | None = None   # link per aprire l'originale online (es. messaggio Outlook)

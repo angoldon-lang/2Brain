@@ -9,13 +9,13 @@ BATCH = 32
 
 
 class Indexer:
-    def __init__(self, cfg, store, embedder, on_done=None):
-        self.cfg, self.store, self.embedder, self.on_done = cfg, store, embedder, on_done
+    def __init__(self, cfg, store, embedder, on_done=None, ctx=None):
+        self.cfg, self.store, self.embedder, self.on_done, self.ctx = cfg, store, embedder, on_done, ctx
         self.status = {"running": False, "current": None, "started_at": None, "sources": {}}
         self._t = None
 
     def roots(self):
-        return [r for s in self.cfg.sources for r in build(s, self.cfg.cache_dir).roots()]
+        return [r for s in self.store.sources() for r in build(s, self.cfg.cache_dir, self.ctx).roots()]
 
     def start(self):
         if self._t and self._t.is_alive():
@@ -25,17 +25,18 @@ class Indexer:
         return True
 
     def run(self):
+        sources = self.store.sources()
         self.status.update(running=True, started_at=time.time(), sources={
             s.name: {"state": "waiting", "total": 0, "processed": 0, "new": 0, "failed": 0, "error": None}
-            for s in self.cfg.sources})
+            for s in sources})
         run_id = self.store.start_run()
         notes = []
         try:
-            for s in self.cfg.sources:
+            for s in sources:
                 st = self.status["sources"][s.name]
                 self.status["current"] = s.name
                 try:
-                    self.index_source(build(s, self.cfg.cache_dir), st)
+                    self.index_source(build(s, self.cfg.cache_dir, self.ctx), st)
                     st["state"] = "done"
                 except Exception as e:  # una sorgente rotta non blocca le altre
                     log.exception("sorgente %s", s.name)
@@ -85,7 +86,7 @@ class Indexer:
             rows = [(i, pg, t, embs[n] if embs is not None else None) for n, (i, pg, t) in enumerate(chunks)]
             self.store.add_doc({"source": name, "key": d.key, "title": d.title, "location": d.location,
                                 "file_path": str(d.file_path), "kind": d.kind, "mtime": d.mtime,
-                                "size": d.size, "pv": pv}, rows)
+                                "size": d.size, "pv": pv, "web_url": d.web_url}, rows)
             if partial:
                 self.store.set_issue(name, d.key, d.location,
                                      f"indicizzato solo in parte: primi {MAX_CHUNKS} frammenti (file molto grande)")

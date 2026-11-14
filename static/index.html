@@ -82,11 +82,21 @@ button.ghost:hover{border-color:var(--acc)}
 #note.on{display:block}
 .runs{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}.runs td,.runs th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
 .runs th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+#sorgenti{overflow:auto;padding:16px;gap:14px}
+.sec{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.sec h3{margin:0 0 2px;font-size:15px}.sec>p{margin:0 0 10px;color:var(--mut);font-size:12.5px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}.row input{flex:1;min-width:150px}
+.code{font:700 30px ui-monospace,Menlo,monospace;letter-spacing:.12em;text-align:center;background:var(--acc2);color:var(--acc);border-radius:12px;padding:14px;margin:10px 0}
+.steps{font-size:12.5px;color:var(--mut);padding-left:18px;margin:6px 0}.steps li{margin:4px 0}
+.ok-t{color:var(--ok);font-weight:600}button.danger{color:var(--err)}
+details.how{margin-top:8px;font-size:13px}details.how summary{cursor:pointer;color:var(--acc);font-weight:600}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--fg);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13.5px;opacity:0;pointer-events:none;transition:.25s;max-width:80vw;z-index:9}
+#toast.on{opacity:1;transform:translateX(-50%)}#toast.err{background:var(--err);color:#fff}
 @media(max-width:900px){main{grid-template-columns:1fr}#prevcard{display:none}}
 </style></head><body>
 <div id="top">
  <div class="logo"><i>🧠</i>SecondBrain<span class="ver" id="ver">v…</span></div>
- <nav><button data-v="chat" class="on">Chiedi</button><button data-v="stato">Stato file</button></nav>
+ <nav><button data-v="chat" class="on">Chiedi</button><button data-v="stato">Stato file</button><button data-v="sorgenti">Sorgenti</button></nav>
  <div id="pill"><span class="dot" id="dot"></span><span id="pt">…</span><button class="ghost" id="re">Reindicizza</button></div>
 </div>
 <main>
@@ -99,12 +109,14 @@ button.ghost:hover{border-color:var(--acc)}
    <form id="f"><input id="q" placeholder="Fai una domanda sui tuoi file e le tue mail…" autofocus><button class="pri" id="go">Invia</button></form>
   </div>
   <div class="view" id="stato"></div>
+  <div class="view" id="sorgenti"></div>
  </section>
  <section class="card" id="prevcard">
   <div id="pbar"><div class="tt"><b>Anteprima</b></div></div>
   <div id="pbody"><div class="empty">Clicca una fonte o un file<br>per vederne l'anteprima.</div></div>
  </section>
 </main>
+<div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s),log=$('#log');let history=[],S=null,fq='',fsrc='',foff=0;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -114,7 +126,7 @@ const paged=k=>['pdf','pptx','xlsx','xls'].includes(k);
 const fmt=n=>(n??0).toLocaleString('it-IT');
 /* navigazione */
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
- document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id===b.dataset.v));if(b.dataset.v==='stato')renderStato()});
+ document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id===b.dataset.v));if(b.dataset.v==='stato')renderStato();if(b.dataset.v==='sorgenti')renderSorgenti()});
 /* stato */
 const dur=sec=>{sec=Math.round(sec);if(sec<60)return sec+' s';const m=Math.round(sec/60);return m<60?m+' min':Math.floor(m/60)+' h '+(m%60)+' min'};
 function eta(l){if(!l||l.state!=='indexing'||!l.t0||l.processed<20)return '';const el=Date.now()/1e3-l.t0;if(el<20)return '';
@@ -125,7 +137,7 @@ async function status(){S=await (await fetch('/api/status')).json();
  const cur=S.sources.find(x=>x.name===S.indexing.current),l=cur&&cur.live;
  const pct=l&&l.total?Math.round(100*l.processed/l.total):0;
  $('#pt').textContent=busy?`Indicizzo ${S.indexing.current}${l&&l.total?' · '+pct+'%':'…'}`:`${fmt(S.documents)} documenti · ${S.semantic?'ricerca semantica':'solo parole chiave'}`;
- $('#re').disabled=busy;
+ $('#re').disabled=busy;if(!window._first){window._first=1;if(!S.sources.length)document.querySelector('nav button[data-v=sorgenti]').click()}
  const n=$('#note');if(busy&&l&&l.total){n.classList.add('on');n.textContent=`Indicizzazione in corso (${fmt(l.processed)} di ${fmt(l.total)} file in «${cur.name}»${eta(l)?' · '+eta(l):''}). Puoi già fare domande, ma i risultati possono essere incompleti. I file più recenti vengono indicizzati per primi.`}
  else if(busy){n.classList.add('on');n.textContent='Scansione delle cartelle in corso…'}else n.classList.remove('on');
  if($('#stato').classList.contains('on'))renderStato();
@@ -184,7 +196,7 @@ async function preview(h,card){document.querySelectorAll('.src.on').forEach(x=>x
 function hasOrig(d){return d.kind==='pdf'||(S&&S.office_preview&&OFFICE.includes(d.kind))}
 async function drawPreview(){const {h,d}=cur,b=$('#pbody'),bar=$('#pbar');
  bar.innerHTML=`<div class="tt"><b>${esc(d.title)}</b><small>${esc(d.location)}</small></div>
-  <button class="ghost" onclick="window.open('/api/file/${d.id}')">Apri</button><button class="ghost" onclick="fetch('/api/reveal/${d.id}',{method:'POST'})">Mostra nel Finder</button>`;
+  ${d.web_url?`<button class="ghost" onclick="window.open(cur.d.web_url)">Apri in Outlook</button>`:`<button class="ghost" onclick="window.open('/api/file/${d.id}')">Apri</button><button class="ghost" onclick="fetch('/api/reveal/${d.id}',{method:'POST'})">Mostra nel Finder</button>`}`;
  let tabs=$('#ptabs');if(!tabs){tabs=el('div','tabs');tabs.id='ptabs';bar.parentNode.insertBefore(tabs,b)}
  tabs.innerHTML=hasOrig(d)&&d.kind!=='pdf'?`<button data-m="text" class="${cur.mode==='text'?'on':''}">Testo trovato</button><button data-m="orig" class="${cur.mode==='orig'?'on':''}">Documento originale</button>`:'';
  tabs.style.display=tabs.innerHTML?'flex':'none';
@@ -211,6 +223,57 @@ async function drawPreview(){const {h,d}=cur,b=$('#pbody'),bar=$('#pbar');
  if(v.hl){doc.append(document.createTextNode(t.slice(0,v.hl[0])));const m=el('mark');m.textContent=t.slice(v.hl[0],v.hl[1]);doc.append(m,document.createTextNode(t.slice(v.hl[1])))}
  else doc.textContent=t;
  b.append(doc);b.querySelector('mark')?.scrollIntoView({block:'center'})}
+/* sorgenti */
+const toast=(m,err)=>{const t=$('#toast');t.textContent=m;t.className='on'+(err?' err':'');clearTimeout(t._t);t._t=setTimeout(()=>t.className='',5500)};
+async function api(u,o){const r=await fetch(u,o),j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:('Errore '+r.status));return j}
+const post=(u,b)=>api(u,{method:'POST',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});
+const TYPE={folder:'cartella',pst:'archivio PST',outlook365:'Outlook 365'};let m365Timer=null,srcList=[];
+async function addSource(body,label){try{const r=await post('/api/sources',body);toast(`Aggiunta «${r.name}». Indicizzazione avviata: puoi già cercare.`);await renderSorgenti();status()}catch(e){toast(e.message,1)}}
+async function pickAndAdd(kind){try{const r=await post('/api/sources/pick?kind='+kind);if(!r.path){toast('Nessuna scelta effettuata');return}await addSource({type:kind==='folder'?'folder':'pst',path:r.path})}
+ catch(e){toast(e.message,1)}}
+async function renderSorgenti(){const v=$('#sorgenti');
+ if(!v.dataset.built){v.dataset.built=1;v.innerHTML=`
+ <div class="sec"><h3>OneDrive e SharePoint</h3><p>Trovati sul tuo Mac (sincronizzati dall’app OneDrive). Un clic e li aggiungi.</p><div id="s-cloud"></div></div>
+ <div class="sec"><h3>Cartelle e archivi Outlook</h3><p>Qualsiasi cartella del Mac, oppure un archivio <b>.pst</b> di Outlook.</p>
+  <div class="row"><button class="pri" id="b-folder">Scegli una cartella…</button><button class="ghost" id="b-pst" style="padding:9px 14px">Scegli un file .pst…</button></div>
+  <details class="how"><summary>Inserisci il percorso a mano</summary><div class="row"><input id="s-path" placeholder="/Users/nome/Documents/Progetti"><button class="ghost" id="b-path">Aggiungi</button></div></details></div>
+ <div class="sec"><h3>Outlook 365 (posta online)</h3><p>Legge la tua casella Microsoft 365 in sola lettura: l’app non può inviare né cancellare nulla.</p><div id="s-m365"></div></div>
+ <div class="sec"><h3>Sorgenti attive</h3><div id="s-active"></div></div>`;
+  $('#b-folder').onclick=()=>pickAndAdd('folder');$('#b-pst').onclick=()=>pickAndAdd('pst');
+  $('#b-path').onclick=()=>{const p=$('#s-path').value.trim();if(p)addSource({type:p.toLowerCase().endsWith('.pst')?'pst':'folder',path:p})}}
+ const [det,list,m]=await Promise.all([api('/api/sources/detect'),api('/api/sources'),api('/api/m365')]);srcList=list;
+ $('#s-cloud').innerHTML=det.length?'':'<div class="empty" style="padding:14px">Non trovo OneDrive o SharePoint sincronizzati su questo Mac.<br>Apri l’app OneDrive, accedi e sincronizza le librerie che ti servono; poi riapri questa pagina.</div>';
+ det.forEach(d=>{const r=el('div','frow',`<span class="k">${d.group==='sharepoint'?'SP':'OD'}</span><div class="t"><b>${esc(d.label)}</b><small>${esc(d.path)}</small></div>`);
+  if(d.added)r.append(el('span','ok-t','✓ aggiunta'));else{const b=el('button','pri','Aggiungi');b.style.padding='6px 14px';b.onclick=()=>addSource({type:'folder',path:d.path,name:d.label});r.append(b)}
+  r.style.cursor='default';$('#s-cloud').append(r)});
+ renderActive(list);renderM365(m)}
+function renderActive(list){const b=$('#s-active');b.innerHTML=list.length?'':'<div class="meta">Nessuna sorgente: aggiungine una qui sopra.</div>';
+ list.forEach(s=>{const r=el('div','frow',`<span class="k">${s.type==='outlook365'?'365':s.type==='pst'?'PST':'DIR'}</span><div class="t"><b>${esc(s.name)}</b><small>${esc(TYPE[s.type]||s.type)} · ${esc(s.path)}</small></div>`);
+  const x=el('button','ghost danger','Rimuovi');x.onclick=async()=>{if(!confirm(`Rimuovo «${s.name}» dall’indice?\nI file originali non vengono toccati.`))return;
+   try{await api('/api/sources/'+encodeURIComponent(s.name),{method:'DELETE'});toast('Sorgente rimossa');renderSorgenti();status()}catch(e){toast(e.message,1)}};
+  r.append(x);r.style.cursor='default';b.append(r)})}
+function renderM365(m){const b=$('#s-m365');clearTimeout(m365Timer);
+ const has=srcList.some(s=>s.type==='outlook365');
+ if(m.state==='pending'){b.innerHTML=`<div>1. Apri la pagina di accesso Microsoft e inserisci questo codice:</div><div class="code">${esc(m.user_code)}</div>
+  <div class="row"><button class="pri" id="m-open">Apri pagina di accesso</button><button class="ghost" id="m-copy" style="padding:9px 14px">Copia codice</button></div>
+  <p class="meta" style="margin-top:10px">2. Accedi con il tuo account aziendale e accetta. Attendo la conferma…</p>`;
+  $('#m-open').onclick=()=>window.open(m.uri,'_blank');$('#m-copy').onclick=()=>{navigator.clipboard?.writeText(m.user_code);toast('Codice copiato')};
+  m365Timer=setTimeout(async()=>{try{renderM365(await api('/api/m365'))}catch(e){}},2000);return}
+ if(m.state==='signed_in'){b.innerHTML=`<div class="ok-t">✓ Connesso come ${esc(m.account)}</div>
+  <div class="row">${has?'<span class="meta">La posta è già tra le sorgenti attive.</span>':`<select id="m-months"><option value="3">ultimi 3 mesi</option><option value="6">ultimi 6 mesi</option><option value="12" selected>ultimo anno</option><option value="24">ultimi 2 anni</option><option value="60">ultimi 5 anni</option></select><button class="pri" id="m-add">Aggiungi la mia posta</button>`}<button class="ghost danger" id="m-out" style="margin-left:auto">Disconnetti</button></div>`;
+  $('#m-add')&&($('#m-add').onclick=()=>addSource({type:'outlook365',months:+$('#m-months').value}));
+  $('#m-out').onclick=async()=>{await post('/api/m365/logout');toast('Disconnesso');renderM365(await api('/api/m365'))};return}
+ b.innerHTML=`${m.state==='error'?`<div class="err-t" style="margin-bottom:8px">⚠ ${esc(m.error)}</div>`:''}
+  <div class="row"><input id="m-cid" placeholder="ID applicazione (client)" value="${esc(m.client_id)}"><input id="m-ten" placeholder="ID directory (tenant)" value="${esc(m.tenant==='organizations'?'':m.tenant)}"></div>
+  <div class="row"><button class="pri" id="m-login">Accedi con Microsoft</button></div>
+  <details class="how"><summary>Dove trovo questi due ID? (una tantum, 5 minuti)</summary><ol class="steps">
+   <li>Vai su <b>entra.microsoft.com</b> → Applicazioni → Registrazioni app → <b>Nuova registrazione</b>.</li>
+   <li>Nome «SecondBrain», account «Solo questa directory». Redirect URI: tipo <b>Client pubblico/nativo</b>, valore <code>https://login.microsoftonline.com/common/oauth2/nativeclient</code>.</li>
+   <li>Menu <b>Autenticazione</b> → «Consenti flussi client pubblici» = <b>Sì</b>.</li>
+   <li>Menu <b>Autorizzazioni API</b> → Aggiungi → Microsoft Graph → Delegate → <b>Mail.Read</b>. Se compare «Consenso amministratore richiesto», chiedilo al tuo IT.</li>
+   <li>Dalla pagina <b>Panoramica</b> copia «ID applicazione (client)» e «ID directory (tenant)» e incollali qui sopra.</li></ol>
+   <p class="meta">Se l’azienda blocca la registrazione di app, serve l’IT: l’app chiede solo lettura della posta.</p></details>`;
+ $('#m-login').onclick=async()=>{try{renderM365(await post('/api/m365/login',{client_id:$('#m-cid').value,tenant:$('#m-ten').value||'organizations'}))}catch(e){toast(e.message,1)}}}
 /* chat */
 function srcCard(h,i){const c=el('div','src',`<span class="num">${i}</span><div><b>${esc(h.title)}</b><small>${esc(h.location)}${h.page&&paged(h.kind)?' · pag. '+h.page:''}</small><p>${esc(h.text.slice(0,190))}…</p></div>`);c.onclick=()=>preview(h,c);return c}
 async function ask(q){if(!q)return;$('#q').value='';$('#go').disabled=true;log.querySelector('.hello')?.remove();

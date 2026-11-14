@@ -7,8 +7,12 @@ from pathlib import Path
 @dataclass
 class Source:
     name: str
-    type: str
-    path: Path
+    type: str           # folder | pst | outlook365
+    path: Path = Path("")
+    options: dict = field(default_factory=dict)
+
+    def display(self) -> str:
+        return "Microsoft 365 (posta online)" if self.type == "outlook365" else str(self.path)
 
 
 @dataclass
