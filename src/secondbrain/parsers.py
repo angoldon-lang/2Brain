@@ -25,10 +25,13 @@ def _row(cells) -> str:
     return " | ".join(str(c).strip() for c in cells if c is not None and str(c).strip() != "")
 
 
+def _keep_row(r) -> bool:
+    return any(isinstance(c, str) and c.strip() and not _numlike(c) for c in r)
+
+
 def _sheet_text(title, rows) -> str:
     """Tiene solo le righe con almeno una cella di testo: le tabelle di soli numeri non aiutano la ricerca."""
-    keep = [_row(r) for r in rows if any(isinstance(c, str) and c.strip() and not _numlike(c) for c in r)]
-    return f"[Foglio {title}]\n" + "\n".join(keep)
+    return f"[Foglio {title}]\n" + "\n".join(_row(r) for r in rows if _keep_row(r))
 
 
 TEXT_EXT = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml"}
@@ -128,12 +131,38 @@ def parse_pdf(path: Path) -> list[tuple[int, str]]:
     return got
 
 
+def _resolve(path: Path, ext: str):
+    return _open_office(path, ext) if ext != ".xls" else ("xls" if path.read_bytes()[:4] == OLE else str(path))
+
+
+def grid_rows(path: Path, page: int) -> list[tuple[int, list[str]]]:
+    """Righe di un foglio con la POSIZIONE ORIGINALE delle celle, nello stesso ordine/filtro usato per l'indice:
+    [(numero_riga_excel, [celle])]. Serve all'anteprima a tabella."""
+    ext = path.suffix.lower()
+    src = _resolve(path, ext)
+    out = []
+    if src == "xls" or ext == ".xls":
+        import xlrd
+        ws = xlrd.open_workbook(str(path), on_demand=True).sheets()[page - 1]
+        for r in range(ws.nrows):
+            cells = ws.row_values(r)
+            if _keep_row(cells):
+                out.append((r + 1, ["" if c is None else str(c) for c in cells]))
+        return out
+    import openpyxl
+    ws = openpyxl.load_workbook(src, read_only=True, data_only=True).worksheets[page - 1]
+    for i, cells in enumerate(ws.iter_rows(values_only=True), 1):
+        if _keep_row(cells):
+            out.append((i, ["" if c is None else str(c) for c in cells]))
+    return out
+
+
 def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
     if ext == ".pdf":
         return parse_pdf(path)
     if ext in (".docx", ".xlsx", ".xls", ".pptx"):
-        src = _open_office(path, ext) if ext != ".xls" else ("xls" if path.read_bytes()[:4] == OLE else str(path))
+        src = _resolve(path, ext)
         if src == "xls":
             return parse_xls(path)
         if ext == ".docx":

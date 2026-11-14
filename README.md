@@ -37,10 +37,19 @@ Microsoft non permette a un'app di leggere la posta senza un'«app registrata» 
 Se l'IT blocca la registrazione di app o il consenso, l'accesso alla posta 365 non è possibile: in quel caso resta l'esportazione in PST.
 Il token resta in `~/.secondbrain/m365_token.json` (permessi 600). «Disconnetti» lo cancella.
 
-## Ricerca
-Ibrida: BM25 (SQLite FTS5) + embedding `bge-m3`, fusi con RRF; max 2 frammenti per documento.
-Senza embedding disponibili degrada a sola parola chiave. Indicizzazione incrementale (mtime+size).
-Il retrieval brute-force numpy va bene fino a ~200k frammenti; oltre, passare a sqlite-vec/LanceDB.
+## Ricerca e indicizzazione
+**Due fasi**: (1) lettura di tutti i file → subito ricercabili **per parole**; (2) in coda, la ricerca **per significato** (embedding `bge-m3`), dai file più recenti, riprendendo dopo un riavvio. L'avanzamento è sempre visibile; si può cercare in qualsiasi momento.
+
+Qualità dei risultati:
+- le parole vuote («mi», «le», «fatte»…) sono ignorate: contano solo i termini che distinguono un documento;
+- prima chi contiene **tutte** le parole importanti, poi chi ne contiene alcune; prefissi (*offerte → offerta/offerto*);
+- il **nome del file e il percorso** fanno parte del contenuto (es. `OFF_ADC_Bper_Solarwinds.pdf` si trova cercando «bper»);
+- con «ultima/ultime/recenti» i documenti più recenti sono premiati;
+- parole chiave + significato sono fuse (RRF); max 2 frammenti per documento.
+Per togliere rumore (giornali, progetti di sviluppo) usa le **esclusioni** per sorgente.
+
+Memoria: i vettori stanno in RAM (circa 4 KB per frammento: 200.000 frammenti ≈ 800 MB). Oltre, conviene un indice dedicato (sqlite-vec / LanceDB).
+I fogli Excel sono indicizzati con i primi 150 frammenti (solo righe con testo); nell'anteprima si vedono come tabella con la riga trovata evidenziata.
 
 ## Fase 2 — Sostituto su Teams (progetto, non ancora implementato)
 - Bot Teams (Bot Framework) → tunnel in uscita verso il Mac; il Mac non apre porte.

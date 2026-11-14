@@ -6,50 +6,91 @@ from .parsers import parser_version
 
 log = logging.getLogger("secondbrain.indexer")
 BATCH = 32
+MAX_CHUNKS_BY_KIND = {"xlsx": 150, "xls": 150}      # i fogli di costi sono enormi e pieni di numeri: bastano i primi frammenti
 
 
 class Indexer:
-    def __init__(self, cfg, store, embedder, on_done=None, ctx=None):
+    def __init__(self, cfg, store, embedder, on_done=None, ctx=None, on_vectors=None):
         self.cfg, self.store, self.embedder, self.on_done, self.ctx = cfg, store, embedder, on_done, ctx
-        self.status = {"running": False, "current": None, "started_at": None, "sources": {}}
+        self.on_vectors = on_vectors
+        self.status = {"running": False, "current": None, "started_at": None, "sources": {}, "embedding": None}
         self._t = None
+        self._rescan = False
 
     def roots(self):
         return [r for s in self.store.sources() for r in build(s, self.cfg.cache_dir, self.ctx).roots()]
 
     def start(self):
+        """True se parte ora; False se era già in corso (in tal caso rifà la scansione appena possibile)."""
         if self._t and self._t.is_alive():
+            self._rescan = True
             return False
         self._t = threading.Thread(target=self.run, daemon=True)
         self._t.start()
         return True
 
     def run(self):
-        sources = self.store.sources()
-        self.status.update(running=True, started_at=time.time(), sources={
-            s.name: {"state": "waiting", "total": 0, "processed": 0, "new": 0, "failed": 0, "error": None}
-            for s in sources})
+        self.status.update(running=True, started_at=time.time())
         run_id = self.store.start_run()
-        notes = []
+        notes, tot = [], {"processed": 0, "new": 0, "failed": 0}
         try:
-            for s in sources:
-                st = self.status["sources"][s.name]
-                self.status["current"] = s.name
-                try:
-                    self.index_source(build(s, self.cfg.cache_dir, self.ctx), st)
-                    st["state"] = "done"
-                except Exception as e:  # una sorgente rotta non blocca le altre
-                    log.exception("sorgente %s", s.name)
-                    st.update(state="error", error=str(e))
-                    notes.append(f"{s.name}: {e}")
-                if self.on_done:
-                    self.on_done()
+            while True:
+                self._rescan = False
+                self._scan_all(notes, tot)
+                self.embed_pending()
+                if not self._rescan:
+                    break
         finally:
-            ss = self.status["sources"].values()
             self.store.finish_run(run_id, "completata" if not notes else "con errori",
-                                  sum(x["processed"] for x in ss), sum(x["new"] for x in ss),
-                                  sum(x["failed"] for x in ss), "; ".join(notes))
+                                  tot["processed"], tot["new"], tot["failed"], "; ".join(notes))
             self.status.update(running=False, current=None)
+
+    def _scan_all(self, notes, tot):
+        """Fase 1: legge e indicizza tutto per parole chiave (veloce). Gli embedding vengono dopo."""
+        sources = self.store.sources()
+        self.status["sources"] = {
+            s.name: {"state": "waiting", "total": 0, "processed": 0, "new": 0, "failed": 0, "error": None}
+            for s in sources}
+        for s in sources:
+            st = self.status["sources"][s.name]
+            self.status["current"] = s.name
+            try:
+                self.index_source(build(s, self.cfg.cache_dir, self.ctx), st)
+                st["state"] = "done"
+            except Exception as e:  # una sorgente rotta non blocca le altre
+                log.exception("sorgente %s", s.name)
+                st.update(state="error", error=str(e))
+                notes.append(f"{s.name}: {e}")
+            for k in tot:
+                tot[k] += st.get(k, 0)
+            if self.on_done:
+                self.on_done()
+        self.status["current"] = None
+
+    def embed_pending(self):
+        """Fase 2: calcola gli embedding mancanti, dai file più recenti. Riprende da dove era dopo un riavvio."""
+        if self.embedder is None:
+            return
+        e = self.status["embedding"] = {"running": True, "done": 0, "total": self.store.count_pending(),
+                                        "t0": time.time(), "error": None}
+        try:
+            while not self._rescan and e["done"] < e["total"] + 10_000:
+                rows = self.store.pending_chunks(BATCH)
+                if not rows:
+                    break
+                try:
+                    vecs = self.embedder([f"{r['title']} — {r['location']}\n{r['text']}" for r in rows])
+                except Exception as ex:
+                    log.warning("embedding interrotto: %s", ex)
+                    e["error"] = str(ex)
+                    break
+                ids = [r["id"] for r in rows]
+                self.store.set_embeddings(ids, vecs)
+                if self.on_vectors:
+                    self.on_vectors(ids, [r["source"] for r in rows], vecs)
+                e["done"] += len(rows)
+        finally:
+            e["running"] = False
 
     def index_source(self, conn, st):
         name = conn.source.name
@@ -82,31 +123,25 @@ class Indexer:
                 if not chunks:                        # file vuoto (log, __init__, .egg-info…): non è un problema
                     st["empty"] = st.get("empty", 0) + 1
                     continue
-                partial = len(chunks) > MAX_CHUNKS
-                chunks = chunks[:MAX_CHUNKS]
-                embs = self._embed([c[2] for c in chunks])
+                cap = MAX_CHUNKS_BY_KIND.get(d.kind, MAX_CHUNKS)
+                partial = len(chunks) > cap
+                chunks = chunks[:cap]
             except Exception as e:
                 log.warning("skip %s: %s", d.location, e)
                 self.store.set_issue(name, d.key, d.location, str(e), d.mtime, d.size, pv)
                 bad.add(d.key)
                 st["failed"] += 1
                 continue
-            rows = [(i, pg, t, embs[n] if embs is not None else None) for n, (i, pg, t) in enumerate(chunks)]
+            rows = [(i, pg, t, None) for i, pg, t in chunks]
             self.store.add_doc({"source": name, "key": d.key, "title": d.title, "location": d.location,
                                 "file_path": str(d.file_path), "kind": d.kind, "mtime": d.mtime,
                                 "size": d.size, "pv": pv, "web_url": d.web_url}, rows)
             if partial:
                 self.store.set_issue(name, d.key, d.location,
-                                     f"indicizzato solo in parte: primi {MAX_CHUNKS} frammenti (file molto grande)", d.mtime, d.size, pv)
+                                     f"indicizzato solo in parte: primi {cap} frammenti (file molto grande)", d.mtime, d.size, pv)
                 bad.add(d.key)
             st["new"] += 1
         for key, (doc_id, *_) in known.items():
             if key not in seen:
                 self.store.delete_doc(doc_id)
         self.store.sync_issues(name, bad)
-
-    def _embed(self, texts):
-        if not texts or self.embedder is None:
-            return None
-        import numpy as np
-        return np.vstack([self.embedder(texts[i:i + BATCH]) for i in range(0, len(texts), BATCH)])

@@ -83,6 +83,11 @@ button.ghost:hover{border-color:var(--acc)}
 .load{padding:40px;text-align:center;color:var(--mut)}
 #note{display:none;margin:0 12px 8px;padding:8px 12px;border-radius:10px;background:#d9770618;color:var(--warn);font-size:12.5px}
 #note.on{display:block}
+.grid{overflow:auto;max-height:100%}.grid table{border-collapse:collapse;font-size:12px;min-width:100%}
+.grid th{position:sticky;top:0;background:var(--card);color:var(--mut);font-weight:600;padding:4px 8px;border:1px solid var(--line);text-align:center}
+.grid tbody th{position:static;color:var(--mut);background:var(--card);font-weight:500;text-align:right}
+.grid td{padding:4px 8px;border:1px solid var(--line);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+.grid tr.hit td{background:var(--hl)}.grid tr.best td.m{background:#ffc400;color:#000;font-weight:700}.grid-note{padding:6px 16px;color:var(--mut);font-size:12px}
 .runs{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}.runs td,.runs th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
 .runs th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 #sorgenti{overflow:auto;padding:16px;gap:14px}
@@ -121,7 +126,7 @@ details.how{margin-top:8px;font-size:13px}details.how summary{cursor:pointer;col
 </main>
 <div id="toast"></div>
 <script>
-const $=s=>document.querySelector(s),log=$('#log');let history=[],S=null,fq='',fsrc='',foff=0;
+const $=s=>document.querySelector(s),log=$('#log');let lastQ='',history=[],S=null,fq='',fsrc='',foff=0;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
 const ago=t=>{if(!t)return '—';const s=Date.now()/1e3-t;return s<60?'adesso':s<3600?Math.floor(s/60)+' min fa':s<86400?Math.floor(s/3600)+' h fa':new Date(t*1e3).toLocaleDateString('it-IT')};
@@ -135,14 +140,19 @@ const dur=sec=>{sec=Math.round(sec);if(sec<60)return sec+' s';const m=Math.round
 function eta(l){if(!l||l.state!=='indexing'||!l.t0||l.processed<20)return '';const el=Date.now()/1e3-l.t0;if(el<20)return '';
  const rate=l.processed/el;return rate>0?'~'+dur((l.total-l.processed)/rate)+' rimanenti':''}
 async function status(){S=await (await fetch('/api/status')).json();
- $('#ver').textContent='v'+S.version;const busy=S.indexing.running;
+ $('#ver').textContent='v'+S.version;const busy=S.indexing.running,E=S.embedding;
+ const scanning=busy&&S.indexing.current,embedding=busy&&!S.indexing.current&&E&&E.running;
  $('#dot').className='dot'+(busy?' busy':'');
  const cur=S.sources.find(x=>x.name===S.indexing.current),l=cur&&cur.live;
- const pct=l&&l.total?Math.round(100*l.processed/l.total):0;
- $('#pt').textContent=busy?`Indicizzo ${S.indexing.current}${l&&l.total?' · '+pct+'%':'…'}`:`${fmt(S.documents)} documenti · ${S.semantic?'ricerca semantica':'solo parole chiave'}`;
- $('#re').disabled=busy;if(!window._first){window._first=1;if(!S.sources.length)document.querySelector('nav button[data-v=sorgenti]').click()}
- const n=$('#note');if(busy&&l&&l.total){n.classList.add('on');n.textContent=`Indicizzazione in corso (${fmt(l.processed)} di ${fmt(l.total)} file in «${cur.name}»${eta(l)?' · '+eta(l):''}). Puoi già fare domande, ma i risultati possono essere incompleti. I file più recenti vengono indicizzati per primi.`}
- else if(busy){n.classList.add('on');n.textContent='Scansione delle cartelle in corso…'}else n.classList.remove('on');
+ const pct=l&&l.total?Math.round(100*l.processed/l.total):0,ep=E&&E.total?Math.floor(100*E.embedded/E.total):100;
+ $('#pt').textContent=scanning?`Leggo ${S.indexing.current}${l&&l.total?' · '+pct+'%':'…'}`
+  :embedding?`Significato ${ep}%`:`${fmt(S.documents)} documenti · ${S.semantic?(ep<100?'significato '+ep+'%':'ricerca completa'):'solo parole chiave'}`;
+ if(!window._first){window._first=1;if(!S.sources.length)document.querySelector('nav button[data-v=sorgenti]').click()}
+ const n=$('#note');
+ if(scanning){n.classList.add('on');n.textContent=l&&l.total?`Lettura dei file in corso (${fmt(l.processed)} di ${fmt(l.total)} in «${cur.name}»${eta(l)?' · '+eta(l):''}). Puoi già fare domande: i risultati possono essere incompleti. I file più recenti per primi.`:'Scansione delle cartelle in corso…'}
+ else if(embedding){n.classList.add('on');n.textContent=`Tutti i file sono già ricercabili per parole. Sto completando la ricerca per significato: ${fmt(E.embedded)} di ${fmt(E.total)} frammenti (${ep}%)${E.eta_s?' · circa '+dur(E.eta_s)+' rimanenti':''}. Puoi usarla subito, migliora man mano.`}
+ else if(E&&E.error&&ep<100){n.classList.add('on');n.textContent='⚠ Ricerca per significato interrotta (Ollama non risponde?). Le parole chiave funzionano. Riprova con «Reindicizza».'}
+ else n.classList.remove('on');
  if($('#stato').classList.contains('on'))renderStato();
  setTimeout(status,busy?1500:15000)}
 $('#re').onclick=async()=>{await fetch('/api/reindex',{method:'POST'});status()};
@@ -163,6 +173,10 @@ function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora 
   d.ontoggle=async()=>{if(!d.open)return;const r=await (await fetch('/api/issues?source='+encodeURIComponent(s.name))).json();
    d.querySelector('ul').innerHTML=r.map(i=>`<li><em>${esc(i.location)}</em>${i.level==='partial'?'<b>Parziale:</b> ':''}${esc(i.reason)}</li>`).join('')+(r.length>=500?'<li>…(primi 500)</li>':'')};c.append(d)}
  return c}
+function embBlock(){const E=S.embedding;if(!E)return '<div class="sc"><b>Ricerca per significato</b> <span class="badge err">non attiva</span><div class="meta" style="margin-top:6px">Ollama non risponde o manca il modello di embedding: funziona la ricerca per parole.</div></div>';
+ const p=E.total?Math.floor(100*E.embedded/E.total):100;
+ return `<div class="sc" style="margin-top:10px"><header><b>Ricerca per significato</b><span class="badge ${p>=100?'ok':'busy'}">${p>=100?'completa':p+'%'}</span></header>
+  <div class="bar"><i style="width:${p}%"></i></div><div class="meta"><span><b>${fmt(E.embedded)}</b> / ${fmt(E.total)} frammenti</span>${E.running&&E.eta_s?`<span>~<b>${dur(E.eta_s)}</b> rimanenti</span>`:''}<span>Le parole chiave sono già complete. Il significato arriva dopo, dai file più recenti.</span></div></div>`}
 let built=false;
 function renderStato(){const v=$('#stato');if(!S)return;
  if(!built){built=true;v.innerHTML=`<div id="kpis"></div><div id="cards"></div><div class="files"><h3>Storico indicizzazioni</h3><div id="runs"></div></div>
@@ -176,7 +190,7 @@ function renderStato(){const v=$('#stato');if(!S)return;
   <div class="kpi"><b>${fmt(S.chunks)}</b><span>frammenti ricercabili</span></div>
   <div class="kpi"><b style="color:${issues?'var(--warn)':'var(--ok)'}">${fmt(issues)}</b><span>file non indicizzati</span></div></div>
   <div class="meta" style="margin-top:10px"><span>Modello chat <b>${esc(S.chat_model)}</b></span><span>Embedding <b>${esc(S.embed_model)}</b></span><span>Versione <b>${esc(S.version)}</b></span>
-  <span>Anteprima originale <b>${S.office_preview?'disponibile':'non attiva'}</b></span></div>`;
+  <span>Anteprima originale <b>${S.office_preview?'disponibile':'non attiva'}</b></span></div>${embBlock()}`;
  const cards=$('#cards');if(!cards.querySelector('details[open]')){cards.innerHTML='';S.sources.forEach(s=>cards.append(sourceCard(s)))}
  if(S.indexing.running!==lastRunning){lastRunning=S.indexing.running;loadRuns()}}
 let lastRunning=null;
@@ -214,7 +228,7 @@ async function drawPreview(){const {h,d}=cur,b=$('#pbody'),bar=$('#pbar');
   catch(e){if(cur===mine)b.innerHTML='<div class="empty">Anteprima originale non disponibile: '+esc(e.message)+'</div>';return}
   if(cur!==mine||cur.mode!=='orig')return;     // nel frattempo l’utente ha cambiato scheda/documento
   b.innerHTML='';const i=el('iframe');i.src=`/api/pdf/${d.id}${term?'#search='+term:''}`;b.append(i);return}
- const q=new URLSearchParams();if(h.chunk_id>0)q.set('chunk',h.chunk_id);if(cur.page)q.set('page',cur.page);
+ const q=new URLSearchParams();if(h.chunk_id>0)q.set('chunk',h.chunk_id);if(lastQ)q.set('q',lastQ);if(cur.page)q.set('page',cur.page);
  b.innerHTML='<div class="load">Carico…</div>';
  const r=await fetch(`/api/preview/${d.id}?${q}`);
  if(!r.ok){b.innerHTML='<div class="empty">'+esc((await r.json()).detail||'Anteprima non disponibile')+'</div>';return}
@@ -222,6 +236,13 @@ async function drawPreview(){const {h,d}=cur,b=$('#pbody'),bar=$('#pbar');
  if(v.pages.length>1){const i=v.pages.indexOf(v.page),w=PAGEWORD[d.kind]||'Parte';
   const n=el('div','pg',`<button class="ghost" ${i<1?'disabled':''}>‹</button><span>${w} <b>${v.page}</b> di ${v.pages.length}</span><button class="ghost" ${i>=v.pages.length-1?'disabled':''}>›</button>`);
   const [pb,nb]=n.querySelectorAll('button');pb.onclick=()=>{cur.page=v.pages[i-1];cur.h={...h,chunk_id:-1};drawPreview()};nb.onclick=()=>{cur.page=v.pages[i+1];cur.h={...h,chunk_id:-1};drawPreview()};b.append(n)}
+ if(v.grid){const g=v.grid,col=i=>{let r='';for(i++;i>0;i=Math.floor((i-1)/26))r=String.fromCharCode(65+(i-1)%26)+r;return r};
+  let h='<table><thead><tr><th></th>'+Array.from({length:g.width},(_,i)=>`<th>${col(i)}</th>`).join('')+'</tr></thead><tbody>';
+  const T=v.terms||[],rc=g.rows.map(([n,c])=>{const t=c.join(' ').toLowerCase();return T.filter(x=>t.includes(x)).length}),mx=Math.max(0,...rc);
+  g.rows.forEach(([n,cells],i)=>{const on=g.hl&&i>=g.hl[0]&&i<=g.hl[1],best=mx>0&&rc[i]===mx;h+=`<tr class="${on?'hit':''}${best?' best':''}"><th>${n}</th>`+Array.from({length:g.width},(_,j)=>{const c=cells[j]||'';return `<td class="${best&&T.some(t=>c.toLowerCase().includes(t))?'m':''}" title="${esc(c)}">${esc(c)}</td>`}).join('')+'</tr>'});
+  const w=el('div','grid',h+'</tbody></table>');
+  const note=el('div','grid-note',`Mostro ${g.rows.length} di ${fmt(g.total)} righe con testo (le righe di soli numeri sono omesse). In giallo l’intervallo trovato; in arancione la riga con più parole della tua domanda.`);
+  b.append(note,w);(w.querySelector('tr.best')||w.querySelector('tr.hit'))?.scrollIntoView({block:'center'});return}
  const doc=el('div','doc');const t=v.text;
  if(v.hl){doc.append(document.createTextNode(t.slice(0,v.hl[0])));const m=el('mark');m.textContent=t.slice(v.hl[0],v.hl[1]);doc.append(m,document.createTextNode(t.slice(v.hl[1])))}
  else doc.textContent=t;
@@ -284,7 +305,7 @@ function renderM365(m){const b=$('#s-m365');clearTimeout(m365Timer);
  $('#m-login').onclick=async()=>{try{renderM365(await post('/api/m365/login',{client_id:$('#m-cid').value,tenant:$('#m-ten').value||'organizations'}))}catch(e){toast(e.message,1)}}}
 /* chat */
 function srcCard(h,i){const c=el('div','src',`<span class="num">${i}</span><div><b>${esc(h.title)}</b><small>${esc(h.location)}${h.page&&paged(h.kind)?' · pag. '+h.page:''}</small><p>${esc(h.text.slice(0,190))}…</p></div>`);c.onclick=()=>preview(h,c);return c}
-async function ask(q){if(!q)return;$('#q').value='';$('#go').disabled=true;log.querySelector('.hello')?.remove();
+async function ask(q){if(!q)return;lastQ=q;$('#q').value='';$('#go').disabled=true;log.querySelector('.hello')?.remove();
  log.append(el('div','q',esc(q)));const ans=el('div','a','<span style="color:var(--mut)">Cerco nei documenti…</span>'),box=el('div','srcs');log.append(ans,box);
  let hits=[],txt='';const render=()=>{ans.innerHTML=esc(txt).replace(/\[(\d+)\]/g,(m,n)=>`<span class="cite" data-n="${n}">[${n}]</span>`);
   ans.querySelectorAll('.cite').forEach(c=>c.onclick=()=>{const h=hits[c.dataset.n-1];h&&preview(h,box.querySelectorAll('.src')[c.dataset.n-1])});log.scrollTop=log.scrollHeight};

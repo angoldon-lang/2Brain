@@ -232,3 +232,63 @@ def test_scanned_pdf_without_ocr_gives_clear_reason(tmp_path):
     f = tmp_path / "scan.pdf"; w.write(f)
     with pytest.raises(ValueError, match="OCR"):
         parse(f)
+
+
+def test_stopwords_dont_beat_the_rare_term(tmp_path):
+    docs, app = make(tmp_path, None)
+    (docs / "giornale.txt").write_text(" ".join(["mi dai le ultime fatte offerte lotte avversari"] * 40))
+    (docs / "OFF_ADC_Bper_Solarwinds.txt").write_text("Offerta per BPER Banca: importo 22.000 euro.")
+    c = run(app)
+    top = c.get("/api/search", params={"q": "mi dai le ultime offerte fatte a bper?"}).json()
+    assert top[0]["title"] == "OFF_ADC_Bper_Solarwinds.txt"
+
+
+def test_prefix_stemming_and_filename_is_searchable(tmp_path):
+    docs, app = make(tmp_path, None)
+    (docs / "OFF_Acme_Rack.txt").write_text("contenuto neutro senza la parola chiave")
+    c = run(app)
+    # "offerte" trova "OFF"? no: ma il nome file è contesto: "acme" e "rack" stanno solo nel titolo
+    assert c.get("/api/search", params={"q": "acme rack"}).json()[0]["title"] == "OFF_Acme_Rack.txt"
+    assert c.get("/api/search", params={"q": "offerte commerciali Rossi"}).json()[0]["title"] == "offerta_rossi.txt"
+
+
+def test_recent_boost_for_ultime(tmp_path):
+    import os
+    docs, app = make(tmp_path, None)
+    old, new = docs / "vecchia.txt", docs / "nuova.txt"
+    old.write_text("offerta Bper importo 1.000"); new.write_text("offerta Bper importo 2.000")
+    os.utime(old, (1_500_000_000, 1_500_000_000))
+    c = run(app)
+    assert c.get("/api/search", params={"q": "ultima offerta bper"}).json()[0]["title"] == "nuova.txt"
+
+
+def test_two_phase_indexing_keyword_first_then_semantic(tmp_path):
+    docs, app = make(tmp_path, fake_embed)
+    idx = app.state.indexer
+    idx.embedder = None                     # fase 1 da sola: tutto cercabile per parole, nessun vettore
+    idx.run()
+    c = TestClient(app)
+    assert c.get("/api/status").json()["embedded"] == 0
+    assert c.get("/api/search", params={"q": "ferie agosto"}).json()[0]["title"] == "ferie.md"
+    idx.embedder = fake_embed               # fase 2: i vettori arrivano dopo, senza rifare la scansione
+    idx.embed_pending()
+    st = c.get("/api/status").json()
+    assert st["embedded"] == st["chunks"] > 0 and st["embedding"]["running"] is False
+    assert len(app.state.searcher.ids) == st["chunks"]                  # il ricercatore li ha ricevuti senza ricaricare
+
+
+def test_xlsx_grid_preview_highlights_original_row(tmp_path):
+    import openpyxl
+    docs, app = make(tmp_path, None)
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Cliente", "Offerta", "Importo"])
+    for i in range(30):
+        ws.append([f"Cliente{i}", f"Offerta {i}", 100 * i])
+    ws.cell(row=21, column=2).value = "Rinnovo ZEBRAROSA Bper"        # riga Excel 21
+    wb.save(docs / "ce.xlsx")
+    c = run(app)
+    hit = c.get("/api/search", params={"q": "ZEBRAROSA"}).json()[0]
+    g = c.get(f"/api/preview/{hit['doc_id']}", params={"chunk": hit["chunk_id"]}).json()["grid"]
+    a, b = g["hl"]
+    assert any("ZEBRAROSA" in cell for n, cells in g["rows"][a:b + 1] for cell in cells)
+    assert 21 in [n for n, _ in g["rows"][a:b + 1]] and g["width"] == 3

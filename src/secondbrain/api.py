@@ -1,5 +1,5 @@
 from __future__ import annotations
-import functools, json, re, mimetypes, shutil, subprocess, sys, threading
+import functools, json, re, time, mimetypes, shutil, subprocess, sys, threading
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -12,9 +12,9 @@ from .embed import OllamaEmbedder
 from .chunk import locate
 from .indexer import Indexer
 from .m365 import M365Auth
-from .parsers import parse
+from .parsers import grid_rows, parse
 from .llm import build_messages, stream_chat
-from .search import Searcher
+from .search import Searcher, tokens
 
 STATIC = Path(__file__).resolve().parents[2] / "static"
 OFFICE_KINDS = {"docx", "xlsx", "xls", "pptx"}
@@ -100,7 +100,8 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         store.set_setting("seeded", "1")
     m365 = M365Auth(store, cfg.data_dir)
     searcher = Searcher(store, embedder)
-    indexer = Indexer(cfg, store, embedder, on_done=searcher.reload, ctx=SimpleNamespace(m365=m365))
+    indexer = Indexer(cfg, store, embedder, on_done=searcher.reload, ctx=SimpleNamespace(m365=m365),
+                      on_vectors=searcher.append)
     app = FastAPI(title="SecondBrain")
     soffice, convert_lock = find_soffice(), threading.Lock()
 
@@ -114,7 +115,13 @@ def create_app(cfg, embedder="auto") -> FastAPI:
             sources.append({"name": s.name, "type": s.type, "path": s.display(), "issues": st.get("issues", 0), "partial": st.get("partial", 0),
                             **{k: st[k] for k in ("documents", "chunks", "last_indexed", "kinds")},
                             "live": live.get(s.name)})
-        return {"version": __version__, **store.stats(), "semantic": embedder is not None,
+        stt = store.stats()
+        e = indexer.status.get("embedding") or {}
+        rate = e["done"] / max(time.time() - e["t0"], 1) if e.get("running") and e.get("done") else 0
+        embedding = None if embedder is None else {
+            "running": bool(e.get("running")), "embedded": stt["embedded"], "total": stt["chunks"],
+            "eta_s": (stt["chunks"] - stt["embedded"]) / rate if rate else None, "error": e.get("error")}
+        return {"version": __version__, **stt, "embedding": embedding, "semantic": embedder is not None,
                 "chat_model": cfg.chat_model, "embed_model": cfg.embed_model,
                 "office_preview": soffice is not None,
                 "indexing": {"running": indexer.status["running"], "current": indexer.status["current"],
@@ -179,8 +186,8 @@ def create_app(cfg, embedder="auto") -> FastAPI:
 
     @app.delete("/api/sources/{name}")
     def remove_source(name: str):
-        if indexer.status["running"]:
-            raise HTTPException(409, "attendi la fine dell'indicizzazione in corso")
+        if indexer.status["current"] is not None:
+            raise HTTPException(409, "è in corso la lettura dei file: riprova tra qualche istante")
         store.remove_source(name)
         searcher.reload()
         return {"ok": True}
@@ -252,7 +259,7 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         return {**d, "chunks": store.doc_chunks(doc_id)}
 
     @app.get("/api/preview/{doc_id}")
-    def preview(doc_id: int, chunk: int | None = None, page: int | None = None):
+    def preview(doc_id: int, chunk: int | None = None, page: int | None = None, q: str | None = None):
         """Testo del documento (con a capo originali) e posizione esatta del frammento trovato."""
         d = _doc(doc_id)
         p = Path(d["file_path"])
@@ -273,7 +280,27 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         hl = None
         if target and target["page"] == pg:
             hl = locate(text, [c for c in chunks if c["page"] == pg], target["id"])
-        return {"kind": d["kind"], "pages": nums, "page": pg, "text": text, "hl": hl}
+        out = {"kind": d["kind"], "pages": nums, "page": pg, "text": text, "hl": hl,
+               "terms": [t[: max(5, len(t) - 2)] if len(t) >= 6 else t for t in tokens(q or "")]}
+        if d["kind"] in ("xlsx", "xls"):
+            try:
+                out["grid"] = _grid(p, pg, text, hl)
+            except Exception:
+                pass                                        # resta l'anteprima a testo
+        return out
+
+    def _grid(p, pg, text, hl):
+        rows = grid_rows(p, pg)
+        a = b = None
+        if hl:                                              # carattere -> riga: l'intestazione "[Foglio X]" è la riga 0
+            a = max(0, text[: hl[0]].count("\n") - 1)
+            b = min(len(rows) - 1, max(a, text[: hl[1]].count("\n") - 1))
+        lo = 0 if a is None else max(0, a - 40)
+        hi = min(len(rows), (300 if a is None else b + 200))
+        width = min(40, max((len(c) for _, c in rows[lo:hi]), default=0))
+        win = [[n, [(x[:160]) for x in cells[:width]]] for n, cells in rows[lo:hi]]
+        return {"rows": win, "width": width, "total": len(rows), "offset": lo,
+                "hl": None if a is None else [a - lo, b - lo]}
 
     @app.get("/api/pdf/{doc_id}")
     def pdf(doc_id: int):

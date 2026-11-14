@@ -25,6 +25,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='unicode
 
 class Store:
     def __init__(self, path):
+        self.lock = threading.RLock()
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -40,9 +41,13 @@ class Store:
                 self.db.execute(f"ALTER TABLE issues ADD COLUMN {col} {typ}")
         if "web_url" not in cols:     # link "Apri in Outlook" per i messaggi 365
             self.db.execute("ALTER TABLE documents ADD COLUMN web_url TEXT")
+        if not self.get_setting("fts_context_v1"):
+            self.db.execute("DELETE FROM chunks_fts")
+            self.db.execute("INSERT INTO chunks_fts(rowid,text) SELECT c.id, d.title||' '||d.location||' '||c.text "
+                            "FROM chunks c JOIN documents d ON d.id=c.doc_id")
+            self.set_setting("fts_context_v1", "1")
         self.db.execute("UPDATE runs SET finished=started, state='interrotta' WHERE finished IS NULL")
         self.db.commit()
-        self.lock = threading.RLock()
 
     def doc_state(self, source):
         with self.lock:
@@ -64,7 +69,8 @@ class Store:
             for idx, page, text, emb in chunks:
                 c = self.db.execute("INSERT INTO chunks(doc_id,idx,page,text,emb) VALUES(?,?,?,?,?)",
                                     (did, idx, page, text, emb.astype(np.float32).tobytes() if emb is not None else None))
-                self.db.execute("INSERT INTO chunks_fts(rowid,text) VALUES(?,?)", (c.lastrowid, text))
+                self.db.execute("INSERT INTO chunks_fts(rowid,text) VALUES(?,?)",
+                                (c.lastrowid, f"{d['title']} {d['location']} {text}"))   # il nome del file è parte del contenuto
             self.db.commit()
             return did
 
@@ -86,9 +92,26 @@ class Store:
                                    "WHERE c.emb IS NOT NULL").fetchall()
         if not rows:
             return [], [], np.zeros((0, 1), np.float32)
-        ids = [r[0] for r in rows]
-        srcs = [r[2] for r in rows]
-        return ids, srcs, np.vstack([np.frombuffer(r[1], np.float32) for r in rows])
+        dim = len(rows[0][1]) // 4
+        mat = np.frombuffer(b"".join(r[1] for r in rows), np.float32).reshape(len(rows), dim)
+        return [r[0] for r in rows], [r[2] for r in rows], mat
+
+    # --- embedding differiti: i frammenti si cercano per parole subito, per significato appena pronti ---
+    def pending_chunks(self, limit):
+        with self.lock:
+            return [dict(r) for r in self.db.execute(
+                "SELECT c.id, c.text, d.title, d.location, d.source FROM chunks c JOIN documents d ON d.id=c.doc_id "
+                "WHERE c.emb IS NULL ORDER BY d.mtime DESC, c.id LIMIT ?", (limit,))]
+
+    def count_pending(self):
+        with self.lock:
+            return self.db.execute("SELECT count(*) FROM chunks WHERE emb IS NULL").fetchone()[0]
+
+    def set_embeddings(self, ids, vecs):
+        with self.lock:
+            self.db.executemany("UPDATE chunks SET emb=? WHERE id=?",
+                                [(v.astype(np.float32).tobytes(), i) for i, v in zip(ids, vecs)])
+            self.db.commit()
 
     def chunks_by_ids(self, ids):
         if not ids:
@@ -112,7 +135,8 @@ class Store:
     def stats(self):
         with self.lock:
             return {"documents": self.db.execute("SELECT count(*) FROM documents").fetchone()[0],
-                    "chunks": self.db.execute("SELECT count(*) FROM chunks").fetchone()[0]}
+                    "chunks": self.db.execute("SELECT count(*) FROM chunks").fetchone()[0],
+                    "embedded": self.db.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]}
 
     # --- stato file -------------------------------------------------------
     def set_issue(self, source, key, location, reason, mtime=None, size=None, pv=None):
