@@ -1,7 +1,9 @@
 """Estrazione testo: ritorna lista di (pagina, testo). Pagina = pagina PDF / foglio / slide."""
 from __future__ import annotations
-import email, email.policy, html, re
+import email, email.policy, html, logging, re, zipfile
 from pathlib import Path
+
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 TEXT_EXT = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".rtf"}
 SUPPORTED = TEXT_EXT | {".pdf", ".docx", ".xlsx", ".pptx", ".html", ".htm", ".eml", ".msg"}
@@ -28,6 +30,15 @@ def parse_eml_bytes(raw: bytes) -> tuple[str, str]:
     return str(m.get("subject", "") or ""), head + text
 
 
+def parse_docx_raw(path: Path) -> list[tuple[int, str]]:
+    """Fallback per .docx con relazioni rotte (es. 'word/NULL'): legge direttamente l'XML."""
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("word/document.xml").decode("utf8", "ignore")
+    xml = re.sub(r"</w:p>|<w:br[^>]*/>|<w:tab/>", "\n", xml)
+    xml = re.sub(r"</w:tc>", " | ", xml)
+    return [(1, html.unescape(re.sub(r"<[^>]+>", "", xml)))]
+
+
 def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
     if ext == ".pdf":
@@ -36,7 +47,10 @@ def parse(path: Path) -> list[tuple[int, str]]:
         return [(i + 1, (p.extract_text() or "")) for i, p in enumerate(r.pages)]
     if ext == ".docx":
         import docx
-        d = docx.Document(str(path))
+        try:
+            d = docx.Document(str(path))
+        except KeyError:
+            return parse_docx_raw(path)
         parts = [p.text for p in d.paragraphs]
         for t in d.tables:
             for row in t.rows:

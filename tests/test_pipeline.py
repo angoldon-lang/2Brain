@@ -59,3 +59,21 @@ def test_hybrid_and_incremental(tmp_path):
 def test_unknown_doc_404(tmp_path):
     _, app = make(tmp_path, None)
     assert TestClient(app).get("/api/file/999").status_code == 404
+
+
+def test_docx_broken_relationship_fallback(tmp_path):
+    import docx, zipfile, shutil
+    from secondbrain.parsers import parse
+    good = tmp_path / "ok.docx"
+    d = docx.Document()
+    d.add_paragraph("Offerta switch Tosano importo 9.800 euro")
+    d.save(good)
+    bad = tmp_path / "bad.docx"
+    with zipfile.ZipFile(good) as zi, zipfile.ZipFile(bad, "w") as zo:
+        for it in zi.infolist():
+            data = zi.read(it.filename)
+            if it.filename == "word/_rels/document.xml.rels":
+                data = data.replace(b"</Relationships>",
+                    b'<Relationship Id="rIdX" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="NULL"/></Relationships>')
+            zo.writestr(it, data)
+    assert "9.800" in parse(bad)[0][1]
