@@ -16,6 +16,16 @@ nano config.toml              # indica le tue sorgenti
 . .venv/bin/activate && secondbrain serve   # http://127.0.0.1:8765
 ```
 
+## Avvio in container (consigliato per isolamento)
+Ollama resta **nativo** (`brew install ollama`, serve la GPU Metal: in Docker andrebbe solo su CPU);
+l'app gira in container con le sorgenti montate **in sola lettura**.
+```bash
+ollama pull qwen2.5:7b-instruct && ollama pull bge-m3
+nano docker-compose.yml config.docker.toml   # percorsi delle sorgenti
+docker compose up -d --build                 # http://127.0.0.1:8765
+```
+Limiti: "Mostra nel Finder" non funziona dal container; i file OneDrive "solo online" restano saltati.
+
 ## Sorgenti
 | Sorgente | Come | Stato |
 |---|---|---|
