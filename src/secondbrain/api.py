@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, mimetypes, subprocess, sys
+import functools, json, mimetypes, shutil, subprocess, sys, threading
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -8,11 +8,24 @@ from pydantic import BaseModel
 from . import __version__
 from .db import Store
 from .embed import OllamaEmbedder
+from .chunk import locate
 from .indexer import Indexer
+from .parsers import parse
 from .llm import build_messages, stream_chat
 from .search import Searcher
 
 STATIC = Path(__file__).resolve().parents[2] / "static"
+OFFICE_KINDS = {"docx", "xlsx", "xls", "pptx"}
+
+
+def find_soffice():
+    return shutil.which("soffice") or next((p for p in ("/Applications/LibreOffice.app/Contents/MacOS/soffice",)
+                                           if Path(p).exists()), None)
+
+
+@functools.lru_cache(maxsize=4)
+def _parsed(path: str, mtime: float):
+    return parse(Path(path))
 
 
 class AskReq(BaseModel):
@@ -29,6 +42,7 @@ def create_app(cfg, embedder="auto") -> FastAPI:
     searcher = Searcher(store, embedder)
     indexer = Indexer(cfg, store, embedder, on_done=searcher.reload)
     app = FastAPI(title="SecondBrain")
+    soffice, convert_lock = find_soffice(), threading.Lock()
 
     @app.get("/api/status")
     def status():
@@ -42,12 +56,18 @@ def create_app(cfg, embedder="auto") -> FastAPI:
                             "live": live.get(s.name)})
         return {"version": __version__, **store.stats(), "semantic": embedder is not None,
                 "chat_model": cfg.chat_model, "embed_model": cfg.embed_model,
-                "indexing": {"running": indexer.status["running"], "current": indexer.status["current"]},
+                "office_preview": soffice is not None,
+                "indexing": {"running": indexer.status["running"], "current": indexer.status["current"],
+                             "started_at": indexer.status["started_at"]},
                 "sources": sources}
 
     @app.get("/api/documents")
     def documents(source: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0):
         return store.list_documents(source, q, min(limit, 200), offset)
+
+    @app.get("/api/runs")
+    def runs():
+        return store.runs()
 
     @app.get("/api/issues")
     def issues(source: str | None = None):
@@ -86,6 +106,57 @@ def create_app(cfg, embedder="auto") -> FastAPI:
     def doc(doc_id: int):
         d = _doc(doc_id)
         return {**d, "chunks": store.doc_chunks(doc_id)}
+
+    @app.get("/api/preview/{doc_id}")
+    def preview(doc_id: int, chunk: int | None = None, page: int | None = None):
+        """Testo del documento (con a capo originali) e posizione esatta del frammento trovato."""
+        d = _doc(doc_id)
+        p = Path(d["file_path"])
+        if not p.exists():
+            raise HTTPException(404, "file non più presente")
+        chunks = store.doc_chunks(doc_id)
+        target = next((c for c in chunks if c["id"] == chunk), None)
+        pg = page or (target["page"] if target else None)
+        try:
+            pages = _parsed(str(p), p.stat().st_mtime)
+        except Exception as e:
+            raise HTTPException(422, f"anteprima testuale non disponibile: {e}")
+        nums = [x[0] for x in pages]
+        if not nums:
+            raise HTTPException(422, "nessun testo")
+        pg = pg if pg in nums else nums[0]
+        text = next(t for n, t in pages if n == pg)
+        hl = None
+        if target and target["page"] == pg:
+            hl = locate(text, [c for c in chunks if c["page"] == pg], target["id"])
+        return {"kind": d["kind"], "pages": nums, "page": pg, "text": text, "hl": hl}
+
+    @app.get("/api/pdf/{doc_id}")
+    def pdf(doc_id: int):
+        """Versione PDF fedele di docx/xlsx/pptx (richiede LibreOffice), in cache."""
+        d = _doc(doc_id)
+        src = Path(d["file_path"])
+        if not soffice:
+            raise HTTPException(501, "LibreOffice non installato (brew install --cask libreoffice)")
+        if d["kind"] not in OFFICE_KINDS or not src.exists():
+            raise HTTPException(404)
+        out_dir = cfg.data_dir / "previews"
+        out_dir.mkdir(exist_ok=True)
+        out = out_dir / f"{doc_id}-{int(d['mtime'])}.pdf"
+        if not out.exists():
+            with convert_lock:
+                tmp = out_dir / f"tmp-{doc_id}"
+                shutil.rmtree(tmp, ignore_errors=True)
+                tmp.mkdir()
+                r = subprocess.run([soffice, f"-env:UserInstallation=file://{out_dir}/lo-profile", "--headless",
+                                    "--convert-to", "pdf", "--outdir", str(tmp), str(src)],
+                                   capture_output=True, timeout=180)
+                made = next(tmp.glob("*.pdf"), None)
+                if r.returncode != 0 or not made:
+                    raise HTTPException(500, "conversione non riuscita")
+                made.replace(out)
+                shutil.rmtree(tmp, ignore_errors=True)
+        return FileResponse(out, media_type="application/pdf")
 
     @app.get("/api/file/{doc_id}")
     def file(doc_id: int):

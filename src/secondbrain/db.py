@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS chunks(
   idx INTEGER, page INTEGER, text TEXT NOT NULL, emb BLOB);
 CREATE TABLE IF NOT EXISTS issues(
   source TEXT NOT NULL, key TEXT NOT NULL, location TEXT, reason TEXT, at REAL, UNIQUE(source, key));
+CREATE TABLE IF NOT EXISTS runs(
+  id INTEGER PRIMARY KEY, started REAL, finished REAL, state TEXT, scanned INTEGER DEFAULT 0,
+  new INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, note TEXT);
 CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 """
@@ -26,13 +29,16 @@ class Store:
         cols = [r[1] for r in self.db.execute("PRAGMA table_info(documents)")]
         if "indexed_at" not in cols:  # migrazione da 0.1
             self.db.execute("ALTER TABLE documents ADD COLUMN indexed_at REAL")
-            self.db.commit()
+        if "pv" not in cols:          # versione del parser con cui è stato letto il file
+            self.db.execute("ALTER TABLE documents ADD COLUMN pv INTEGER DEFAULT 1")
+        self.db.execute("UPDATE runs SET finished=started, state='interrotta' WHERE finished IS NULL")
+        self.db.commit()
         self.lock = threading.RLock()
 
     def doc_state(self, source):
         with self.lock:
-            return {r["key"]: (r["id"], r["mtime"], r["size"]) for r in
-                    self.db.execute("SELECT id,key,mtime,size FROM documents WHERE source=?", (source,))}
+            return {r["key"]: (r["id"], r["mtime"], r["size"], r["pv"] or 1) for r in
+                    self.db.execute("SELECT id,key,mtime,size,pv FROM documents WHERE source=?", (source,))}
 
     def delete_doc(self, doc_id):
         with self.lock:
@@ -43,8 +49,8 @@ class Store:
     def add_doc(self, d: dict, chunks: list[tuple[int, int, str, np.ndarray | None]]):
         with self.lock:
             cur = self.db.execute(
-                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"], time.time()))
+                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at,pv) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"], time.time(), d.get("pv", 1)))
             did = cur.lastrowid
             for idx, page, text, emb in chunks:
                 c = self.db.execute("INSERT INTO chunks(doc_id,idx,page,text,emb) VALUES(?,?,?,?,?)",
@@ -153,3 +159,20 @@ class Store:
                 f"(SELECT count(*) FROM chunks c WHERE c.doc_id=d.id) chunks FROM documents d{w} "
                 f"ORDER BY d.indexed_at DESC, d.id DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
         return {"total": total, "items": [dict(r) for r in rows]}
+
+    # --- storico indicizzazioni -------------------------------------------
+    def start_run(self):
+        with self.lock:
+            c = self.db.execute("INSERT INTO runs(started,state) VALUES(?, 'in corso')", (time.time(),))
+            self.db.commit()
+            return c.lastrowid
+
+    def finish_run(self, run_id, state, scanned, new, failed, note=""):
+        with self.lock:
+            self.db.execute("UPDATE runs SET finished=?,state=?,scanned=?,new=?,failed=?,note=? WHERE id=?",
+                            (time.time(), state, scanned, new, failed, note, run_id))
+            self.db.commit()
+
+    def runs(self, limit=15):
+        with self.lock:
+            return [dict(r) for r in self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]

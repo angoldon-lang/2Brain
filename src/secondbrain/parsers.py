@@ -6,6 +6,19 @@ from pathlib import Path
 warnings.filterwarnings("ignore", module="openpyxl")
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
+# Alzare il numero di un tipo quando cambia il modo di estrarre il testo: i file di quel tipo vengono rielaborati.
+PARSER_VERSION = {"xlsx": 2, "xls": 2}
+
+
+def parser_version(kind: str) -> int:
+    return PARSER_VERSION.get(kind, 1)
+
+
+def _row(cells) -> str:
+    """Riga di foglio senza celle vuote (niente '| | | |')."""
+    return " | ".join(str(c).strip() for c in cells if c is not None and str(c).strip() != "")
+
+
 TEXT_EXT = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".rtf"}
 SUPPORTED = TEXT_EXT | {".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".htm", ".eml", ".msg"}
 
@@ -62,8 +75,8 @@ def parse_xls(path: Path) -> list[tuple[int, str]]:
         raise ValueError(f"foglio Excel non leggibile (protetto da password o corrotto): {e}")
     out = []
     for i, ws in enumerate(wb.sheets()):
-        rows = (" | ".join(str(c) for c in ws.row_values(r)) for r in range(ws.nrows))
-        out.append((i + 1, f"[Foglio {ws.name}]\n" + "\n".join(rows)))
+        rows = (_row(ws.row_values(r)) for r in range(ws.nrows))
+        out.append((i + 1, f"[Foglio {ws.name}]\n" + "\n".join(r for r in rows if r)))
     return out
 
 
@@ -97,8 +110,8 @@ def parse(path: Path) -> list[tuple[int, str]]:
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
         out = []
         for i, ws in enumerate(wb.worksheets):
-            rows = (" | ".join("" if c is None else str(c) for c in r) for r in ws.iter_rows(values_only=True))
-            out.append((i + 1, f"[Foglio {ws.title}]\n" + "\n".join(rows)))
+            rows = (_row(r) for r in ws.iter_rows(values_only=True))
+            out.append((i + 1, f"[Foglio {ws.title}]\n" + "\n".join(r for r in rows if r)))
         return out
     if ext == ".pptx":
         from pptx import Presentation

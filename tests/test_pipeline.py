@@ -132,3 +132,54 @@ def test_migration_from_old_db(tmp_path):
     con.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY, source TEXT NOT NULL, key TEXT NOT NULL, title TEXT, location TEXT, file_path TEXT, kind TEXT, mtime REAL, size INTEGER, UNIQUE(source,key));")
     con.close()
     Store(path).source_stats()
+
+
+def _docx(path, paragraphs):
+    import docx
+    d = docx.Document()
+    for t in paragraphs:
+        d.add_paragraph(t)
+    d.save(path)
+
+
+def test_preview_highlights_exact_chunk_and_keeps_paragraphs(tmp_path):
+    docs, app = make(tmp_path, None)
+    paras = [f"Paragrafo {i}: " + " ".join(f"parola{i}_{j}" for j in range(60)) for i in range(8)]
+    paras[6] += " ZEBRAROSA"
+    _docx(docs / "lungo.docx", paras)
+    c = run(app)
+    hit = c.get("/api/search", params={"q": "ZEBRAROSA"}).json()[0]
+    pv = c.get(f"/api/preview/{hit['doc_id']}", params={"chunk": hit["chunk_id"]}).json()
+    s, e = pv["hl"]
+    assert pv["text"][s:e].split() == hit["text"].split()      # evidenziato = frammento trovato
+    assert pv["text"].count("\n") >= 7                           # paragrafi conservati
+
+
+def test_xlsx_compact_and_reindexed_on_parser_bump(tmp_path):
+    import openpyxl, sqlite3
+    docs, app = make(tmp_path, None)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"], ws["E1"], ws["A3"] = "Campagna", "Budget", "Totale"
+    wb.save(docs / "conto.xlsx")
+    c = run(app)
+    t = c.get("/api/search", params={"q": "Campagna"}).json()[0]["text"]
+    assert "| |" not in t and "Campagna | Budget" in t
+    # simula un file indicizzato con un parser vecchio: viene rielaborato
+    app.state.indexer.store.db.execute("UPDATE documents SET pv=1 WHERE title='conto.xlsx'")
+    app.state.indexer.store.db.commit()
+    app.state.indexer.run()
+    assert app.state.indexer.status["sources"]["Test"]["new"] == 1
+
+
+def test_runs_history_and_office_pdf(tmp_path):
+    docs, app = make(tmp_path, None)
+    _docx(docs / "off.docx", ["Offerta rack importo 3.340 euro"])
+    c = run(app)
+    r = c.get("/api/runs").json()
+    assert r[0]["state"] == "completata" and r[0]["new"] == 4
+    st = c.get("/api/status").json()
+    if st["office_preview"]:
+        did = c.get("/api/search", params={"q": "rack"}).json()[0]["doc_id"]
+        resp = c.get(f"/api/pdf/{did}")
+        assert resp.status_code == 200 and resp.content[:4] == b"%PDF"

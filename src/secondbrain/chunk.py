@@ -1,11 +1,15 @@
 import re
 
+SIZE, OVERLAP = 180, 30
+STEP = SIZE - OVERLAP
+MAX_CHUNKS = 400          # tetto per file (file enormi, es. fogli con decine di migliaia di righe)
 
-def chunk_pages(pages, size=180, overlap=30):
+
+def chunk_pages(pages, size=SIZE, overlap=OVERLAP):
     """Spezza per parole mantenendo il numero di pagina. Ritorna [(idx, page, text)]."""
     out, idx = [], 0
     for page, text in pages:
-        words = re.sub(r"[ \t]+", " ", text).split()
+        words = text.split()
         if not words:
             continue
         step = size - overlap
@@ -15,3 +19,19 @@ def chunk_pages(pages, size=180, overlap=30):
             if s + size >= len(words):
                 break
     return out
+
+
+def locate(page_text, page_chunks, chunk_id):
+    """Posizione (carattere iniziale, finale) di un frammento dentro il testo originale della sua pagina.
+    page_chunks: frammenti della stessa pagina in ordine [{id,text}]. None se non combacia."""
+    pos = next((i for i, c in enumerate(page_chunks) if c["id"] == chunk_id), None)
+    if pos is None:
+        return None
+    words = list(re.finditer(r"\S+", page_text))
+    a = pos * STEP
+    b = min(a + SIZE, len(words))
+    if a >= len(words):
+        return None
+    if " ".join(w.group() for w in words[a:b]) != page_chunks[pos]["text"]:
+        return None
+    return words[a].start(), words[b - 1].end()

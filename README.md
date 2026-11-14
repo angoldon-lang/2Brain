@@ -43,5 +43,11 @@ Il retrieval brute-force numpy va bene fino a ~200k frammenti; oltre, passare a 
 ## Interfaccia
 Due schede: **Chiedi** (chat con fonti e anteprima) e **Stato file** (per ogni sorgente: avanzamento, file indicizzati per tipo, file saltati con il motivo, elenco filtrabile). La versione è nell’intestazione.
 
+## Indicizzazione e anteprima
+- Puoi fare domande **mentre indicizza**: la ricerca usa quanto è già nell'indice. Un avviso indica avanzamento e tempo stimato; i file **più recenti** sono indicizzati per primi.
+- La prima indicizzazione di molte migliaia di file richiede ore (il collo di bottiglia sono gli embedding); poi è incrementale. I file enormi sono indicizzati solo nei primi 400 frammenti e segnalati.
+- La scheda **Stato file** mostra anche lo **storico** delle indicizzazioni.
+- Anteprima: "Testo trovato" (paragrafi originali, frammento evidenziato) per tutti i tipi; "Documento originale" per docx/xlsx/pptx richiede LibreOffice: `brew install --cask libreoffice` (opzionale). I PDF si aprono direttamente alla pagina giusta.
+
 ## Test
 `pip install -e ".[dev]" && pytest`

@@ -71,6 +71,17 @@ button.ghost:hover{border-color:var(--acc)}
 #pbody{flex:1;overflow:auto;min-height:0}#pbody iframe,#pbody img{width:100%;height:100%;border:0;object-fit:contain;background:#fff}
 .ch{padding:11px 18px;border-bottom:1px solid var(--line);white-space:pre-wrap;font-size:13px;line-height:1.6}.ch.hit{background:var(--hl);border-left:3px solid var(--warn)}
 .empty{padding:60px 30px;color:var(--mut);text-align:center}
+.tabs{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--line)}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);padding:6px 10px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.tabs button.on{color:var(--acc);border-color:var(--acc)}
+.pg{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--line);font-size:13px;color:var(--mut)}
+.doc{padding:18px 22px;white-space:pre-wrap;font-size:13.5px;line-height:1.7;max-width:80ch}
+.doc mark{background:var(--hl);color:inherit;border-radius:3px;padding:1px 0;box-shadow:0 0 0 2px var(--hl)}
+.load{padding:40px;text-align:center;color:var(--mut)}
+#note{display:none;margin:0 12px 8px;padding:8px 12px;border-radius:10px;background:#d9770618;color:var(--warn);font-size:12.5px}
+#note.on{display:block}
+.runs{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}.runs td,.runs th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
+.runs th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 @media(max-width:900px){main{grid-template-columns:1fr}#prevcard{display:none}}
 </style></head><body>
 <div id="top">
@@ -84,6 +95,7 @@ button.ghost:hover{border-color:var(--acc)}
    <div id="log"><div class="hello"><div style="font-size:34px">🔎</div><h2>Cosa cerchi?</h2>
      Risponde solo dai tuoi documenti e cita sempre dove ha trovato l'informazione. Tutto resta su questo Mac.
      <div class="chips"><button>Qual è l'ultima offerta inviata a Tosano?</button><button>Riassumi la mail su budget e marketing</button><button>Dove si parla di rack e switch?</button></div></div></div>
+   <div id="note"></div>
    <form id="f"><input id="q" placeholder="Fai una domanda sui tuoi file e le tue mail…" autofocus><button class="pri" id="go">Invia</button></form>
   </div>
   <div class="view" id="stato"></div>
@@ -104,16 +116,24 @@ const fmt=n=>(n??0).toLocaleString('it-IT');
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
  document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id===b.dataset.v));if(b.dataset.v==='stato')renderStato()});
 /* stato */
+const dur=sec=>{sec=Math.round(sec);if(sec<60)return sec+' s';const m=Math.round(sec/60);return m<60?m+' min':Math.floor(m/60)+' h '+(m%60)+' min'};
+function eta(l){if(!l||l.state!=='indexing'||!l.t0||l.processed<20)return '';const el=Date.now()/1e3-l.t0;if(el<20)return '';
+ const rate=l.processed/el;return rate>0?'~'+dur((l.total-l.processed)/rate)+' rimanenti':''}
 async function status(){S=await (await fetch('/api/status')).json();
  $('#ver').textContent='v'+S.version;const busy=S.indexing.running;
  $('#dot').className='dot'+(busy?' busy':'');
- $('#pt').textContent=busy?`Indicizzo ${S.indexing.current}…`:`${fmt(S.documents)} documenti · ${S.semantic?'ricerca semantica':'solo parole chiave'}`;
- $('#re').disabled=busy;if($('#stato').classList.contains('on'))renderStato(true);
+ const cur=S.sources.find(x=>x.name===S.indexing.current),l=cur&&cur.live;
+ const pct=l&&l.total?Math.round(100*l.processed/l.total):0;
+ $('#pt').textContent=busy?`Indicizzo ${S.indexing.current}${l&&l.total?' · '+pct+'%':'…'}`:`${fmt(S.documents)} documenti · ${S.semantic?'ricerca semantica':'solo parole chiave'}`;
+ $('#re').disabled=busy;
+ const n=$('#note');if(busy&&l&&l.total){n.classList.add('on');n.textContent=`Indicizzazione in corso (${fmt(l.processed)} di ${fmt(l.total)} file in «${cur.name}»${eta(l)?' · '+eta(l):''}). Puoi già fare domande, ma i risultati possono essere incompleti. I file più recenti vengono indicizzati per primi.`}
+ else if(busy){n.classList.add('on');n.textContent='Scansione delle cartelle in corso…'}else n.classList.remove('on');
+ if($('#stato').classList.contains('on'))renderStato();
  setTimeout(status,busy?1500:15000)}
 $('#re').onclick=async()=>{await fetch('/api/reindex',{method:'POST'});status()};
-function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora indicizzata</span>',bar='',err='';
+function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora indicizzata</span>',bar='',err='',e='';
  if(l){const pr=l.total?Math.round(100*l.processed/l.total):0;
-  if(l.state==='indexing'||l.state==='scanning')badge=`<span class="badge busy">${l.state==='scanning'?'Scansione…':'Indicizzo '+pr+'%'}</span>`,bar=`<div class="bar"><i style="width:${l.state==='scanning'?5:pr}%"></i></div>`;
+  if(l.state==='indexing'||l.state==='scanning')badge=`<span class="badge busy">${l.state==='scanning'?'Scansione…':'Indicizzo '+pr+'%'}</span>`,bar=`<div class="bar"><i style="width:${l.state==='scanning'?3:Math.max(pr,1)}%"></i></div>`,e=eta(l);
   else if(l.state==='waiting')badge='<span class="badge">In coda</span>';
   else if(l.state==='error')badge='<span class="badge err">Errore</span>',err=`<div class="err-t">⚠ ${esc(l.error)}</div>`;
   else badge='<span class="badge ok">Aggiornata</span>'}
@@ -122,24 +142,34 @@ function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora 
  const c=el('div','sc',`<header><h3>${esc(s.name)}</h3>${badge}<span style="margin-left:auto" class="badge">${esc(s.type)}</span></header>
   <div class="path">${esc(s.path)}</div>${bar}${err}
   <div class="meta"><span><b>${fmt(s.documents)}</b> file indicizzati</span><span><b>${fmt(s.chunks)}</b> frammenti</span>
-   ${l&&l.total?`<span><b>${fmt(l.total)}</b> trovati</span>`:''}<span>aggiornata <b>${ago(s.last_indexed)}</b></span></div>
+   ${l&&l.total?`<span><b>${fmt(l.processed)}</b> / ${fmt(l.total)} esaminati</span>`:''}${e?`<span><b>${e}</b></span>`:''}<span>aggiornata <b>${ago(s.last_indexed)}</b></span></div>
   <div class="kinds">${kinds}</div>`);
- if(s.issues){const d=el('details','iss',`<summary>${s.issues} file non indicizzati — mostra il motivo</summary><ul id="is-${esc(s.name)}"><li>caricamento…</li></ul>`);
+ if(s.issues){const d=el('details','iss',`<summary>${fmt(s.issues)} file con avvisi (non indicizzati o parziali) — mostra il motivo</summary><ul><li>caricamento…</li></ul>`);
   d.ontoggle=async()=>{if(!d.open)return;const r=await (await fetch('/api/issues?source='+encodeURIComponent(s.name))).json();
-   d.querySelector('ul').innerHTML=r.map(i=>`<li><em>${esc(i.location)}</em>${esc(i.reason)}</li>`).join('')};c.append(d)}
+   d.querySelector('ul').innerHTML=r.map(i=>`<li><em>${esc(i.location)}</em>${esc(i.reason)}</li>`).join('')+(r.length>=500?'<li>…(primi 500)</li>':'')};c.append(d)}
  return c}
-function renderStato(soft){const v=$('#stato');if(!S)return;
- if(soft&&v.querySelector('details[open]'))return;      // non disturbare chi sta leggendo i motivi
+let built=false;
+function renderStato(){const v=$('#stato');if(!S)return;
+ if(!built){built=true;v.innerHTML=`<div id="kpis"></div><div id="cards"></div><div class="files"><h3>Storico indicizzazioni</h3><div id="runs"></div></div>
+  <div class="files"><h3>File indicizzati</h3><div style="display:flex;gap:8px"><input id="fq" placeholder="Filtra per nome o percorso…" style="flex:1" value="${esc(fq)}">
+  <select id="fs"></select></div><div id="fl"></div></div>`;
+  let t;$('#fq').oninput=e=>{clearTimeout(t);t=setTimeout(()=>{fq=e.target.value;foff=0;loadFiles()},250)};
+  $('#fs').onchange=e=>{fsrc=e.target.value;foff=0;loadFiles()};
+  $('#fs').innerHTML='<option value="">Tutte le sorgenti</option>'+S.sources.map(s=>`<option>${esc(s.name)}</option>`).join('');loadFiles();loadRuns()}
  const issues=S.sources.reduce((a,s)=>a+s.issues,0);
- v.innerHTML=`<div class="tot"><div class="kpi"><b>${fmt(S.documents)}</b><span>file indicizzati</span></div>
+ $('#kpis').innerHTML=`<div class="tot"><div class="kpi"><b>${fmt(S.documents)}</b><span>file indicizzati</span></div>
   <div class="kpi"><b>${fmt(S.chunks)}</b><span>frammenti ricercabili</span></div>
-  <div class="kpi"><b style="color:${issues?'var(--warn)':'var(--ok)'}">${fmt(issues)}</b><span>file non leggibili</span></div></div>
-  <div class="meta" style="margin-top:10px"><span>Modello chat <b>${esc(S.chat_model)}</b></span><span>Embedding <b>${esc(S.embed_model)}</b></span><span>Versione <b>${esc(S.version)}</b></span></div>`;
- S.sources.forEach(s=>v.append(sourceCard(s)));
- const f=el('div','files',`<h3>File indicizzati</h3><div style="display:flex;gap:8px"><input id="fq" placeholder="Filtra per nome o percorso…" style="flex:1" value="${esc(fq)}">
-  <select id="fs"><option value="">Tutte le sorgenti</option>${S.sources.map(s=>`<option ${s.name===fsrc?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div><div id="fl"></div>`);
- v.append(f);let t;$('#fq').oninput=e=>{clearTimeout(t);t=setTimeout(()=>{fq=e.target.value;foff=0;loadFiles()},250)};
- $('#fs').onchange=e=>{fsrc=e.target.value;foff=0;loadFiles()};loadFiles()}
+  <div class="kpi"><b style="color:${issues?'var(--warn)':'var(--ok)'}">${fmt(issues)}</b><span>file con avvisi</span></div></div>
+  <div class="meta" style="margin-top:10px"><span>Modello chat <b>${esc(S.chat_model)}</b></span><span>Embedding <b>${esc(S.embed_model)}</b></span><span>Versione <b>${esc(S.version)}</b></span>
+  <span>Anteprima originale <b>${S.office_preview?'disponibile':'non attiva'}</b></span></div>`;
+ const cards=$('#cards');if(!cards.querySelector('details[open]')){cards.innerHTML='';S.sources.forEach(s=>cards.append(sourceCard(s)))}
+ if(S.indexing.running!==lastRunning){lastRunning=S.indexing.running;loadRuns()}}
+let lastRunning=null;
+async function loadRuns(){const r=await (await fetch('/api/runs')).json(),b=$('#runs');if(!b)return;
+ b.innerHTML=r.length?`<table class="runs"><tr><th>Avvio</th><th>Durata</th><th>Esaminati</th><th>Nuovi</th><th>Avvisi</th><th>Esito</th></tr>`+
+  r.map(x=>`<tr><td>${new Date(x.started*1e3).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+  <td>${x.finished?dur(x.finished-x.started):'—'}</td><td>${fmt(x.scanned)}</td><td>${fmt(x.new)}</td><td>${fmt(x.failed)}</td>
+  <td><span class="badge ${x.state==='completata'?'ok':x.state==='in corso'?'busy':'err'}" title="${esc(x.note)}">${esc(x.state)}</span></td></tr>`).join('')+'</table>':'<div class="meta">Nessuna indicizzazione ancora eseguita.</div>'}
 async function loadFiles(append){const p=new URLSearchParams({limit:40,offset:foff});if(fq)p.set('q',fq);if(fsrc)p.set('source',fsrc);
  const r=await (await fetch('/api/documents?'+p)).json(),box=$('#fl');if(!append)box.innerHTML='';box.querySelector('.more')?.remove();
  r.items.forEach(d=>{const row=el('div','frow',`<span class="k">${esc(d.kind)}</span><div class="t"><b>${esc(d.title)}</b><small>${esc(d.location)}</small></div><span class="n">${d.chunks} fr. · ${ago(d.indexed_at)}</span>`);
@@ -147,14 +177,40 @@ async function loadFiles(append){const p=new URLSearchParams({limit:40,offset:fo
  if(!r.items.length&&!append)box.append(el('div','empty','Nessun file trovato.'));
  if(foff+r.items.length<r.total){const m=el('button','ghost more',`Mostra altri (${r.total-foff-r.items.length})`);m.style.margin='10px 0';m.onclick=()=>{foff+=40;loadFiles(true)};box.append(m)}}
 /* anteprima */
+const OFFICE=['docx','xlsx','xls','pptx'],PAGEWORD={pdf:'Pagina',pptx:'Slide',xlsx:'Foglio',xls:'Foglio'};let cur=null;
 async function preview(h,card){document.querySelectorAll('.src.on').forEach(x=>x.classList.remove('on'));card&&card.classList.add('on');
- const d=await (await fetch('/api/doc/'+h.doc_id)).json(),b=$('#pbody');
- $('#pbar').innerHTML=`<div class="tt"><b>${esc(d.title)}</b><small>${esc(d.location)}${h.page&&paged(d.kind)?' · pag. '+h.page:''}</small></div>
+ const d=await (await fetch('/api/doc/'+h.doc_id)).json();
+ cur={h,d,mode:d.kind==='pdf'?'orig':'text',page:h.page||null};drawPreview()}
+function hasOrig(d){return d.kind==='pdf'||(S&&S.office_preview&&OFFICE.includes(d.kind))}
+async function drawPreview(){const {h,d}=cur,b=$('#pbody'),bar=$('#pbar');
+ bar.innerHTML=`<div class="tt"><b>${esc(d.title)}</b><small>${esc(d.location)}</small></div>
   <button class="ghost" onclick="window.open('/api/file/${d.id}')">Apri</button><button class="ghost" onclick="fetch('/api/reveal/${d.id}',{method:'POST'})">Mostra nel Finder</button>`;
- b.innerHTML='';
- if(d.kind==='pdf'){const i=el('iframe');i.src=`/api/file/${d.id}#page=${h.page||1}`;b.append(i)}
- else if(['png','jpg','jpeg','gif'].includes(d.kind)){const i=el('img');i.src='/api/file/'+d.id;b.append(i)}
- else{d.chunks.forEach(c=>{const x=el('div','ch'+(c.id===h.chunk_id?' hit':''));x.textContent=c.text;b.append(x)});b.querySelector('.hit')?.scrollIntoView({block:'center'})}}
+ let tabs=$('#ptabs');if(!tabs){tabs=el('div','tabs');tabs.id='ptabs';bar.parentNode.insertBefore(tabs,b)}
+ tabs.innerHTML=hasOrig(d)&&d.kind!=='pdf'?`<button data-m="text" class="${cur.mode==='text'?'on':''}">Testo trovato</button><button data-m="orig" class="${cur.mode==='orig'?'on':''}">Documento originale</button>`:'';
+ tabs.style.display=tabs.innerHTML?'flex':'none';
+ tabs.querySelectorAll('button').forEach(t=>t.onclick=()=>{cur.mode=t.dataset.m;drawPreview()});
+ const term=encodeURIComponent((h.text||'').split(/\s+/).slice(0,4).join(' '));
+ if(cur.mode==='orig'){b.innerHTML='';
+  if(d.kind==='pdf'){const i=el('iframe');i.src=`/api/file/${d.id}#page=${cur.page||1}${term?'&search='+term:''}`;b.append(i);return}
+  if(['png','jpg','jpeg','gif'].includes(d.kind)){const i=el('img');i.src='/api/file/'+d.id;b.append(i);return}
+  const ld=el('div','load','Preparo l’anteprima del documento… (la prima volta richiede qualche secondo)');b.append(ld);
+  const mine=cur;
+  try{const r=await fetch('/api/pdf/'+d.id);if(!r.ok)throw new Error((await r.json()).detail||r.status);await r.arrayBuffer()}
+  catch(e){if(cur===mine)b.innerHTML='<div class="empty">Anteprima originale non disponibile: '+esc(e.message)+'</div>';return}
+  if(cur!==mine||cur.mode!=='orig')return;     // nel frattempo l’utente ha cambiato scheda/documento
+  b.innerHTML='';const i=el('iframe');i.src=`/api/pdf/${d.id}${term?'#search='+term:''}`;b.append(i);return}
+ const q=new URLSearchParams();if(h.chunk_id>0)q.set('chunk',h.chunk_id);if(cur.page)q.set('page',cur.page);
+ b.innerHTML='<div class="load">Carico…</div>';
+ const r=await fetch(`/api/preview/${d.id}?${q}`);
+ if(!r.ok){b.innerHTML='<div class="empty">'+esc((await r.json()).detail||'Anteprima non disponibile')+'</div>';return}
+ const v=await r.json();cur.page=v.page;b.innerHTML='';
+ if(v.pages.length>1){const i=v.pages.indexOf(v.page),w=PAGEWORD[d.kind]||'Parte';
+  const n=el('div','pg',`<button class="ghost" ${i<1?'disabled':''}>‹</button><span>${w} <b>${v.page}</b> di ${v.pages.length}</span><button class="ghost" ${i>=v.pages.length-1?'disabled':''}>›</button>`);
+  const [pb,nb]=n.querySelectorAll('button');pb.onclick=()=>{cur.page=v.pages[i-1];cur.h={...h,chunk_id:-1};drawPreview()};nb.onclick=()=>{cur.page=v.pages[i+1];cur.h={...h,chunk_id:-1};drawPreview()};b.append(n)}
+ const doc=el('div','doc');const t=v.text;
+ if(v.hl){doc.append(document.createTextNode(t.slice(0,v.hl[0])));const m=el('mark');m.textContent=t.slice(v.hl[0],v.hl[1]);doc.append(m,document.createTextNode(t.slice(v.hl[1])))}
+ else doc.textContent=t;
+ b.append(doc);b.querySelector('mark')?.scrollIntoView({block:'center'})}
 /* chat */
 function srcCard(h,i){const c=el('div','src',`<span class="num">${i}</span><div><b>${esc(h.title)}</b><small>${esc(h.location)}${h.page&&paged(h.kind)?' · pag. '+h.page:''}</small><p>${esc(h.text.slice(0,190))}…</p></div>`);c.onclick=()=>preview(h,c);return c}
 async function ask(q){if(!q)return;$('#q').value='';$('#go').disabled=true;log.querySelector('.hello')?.remove();
