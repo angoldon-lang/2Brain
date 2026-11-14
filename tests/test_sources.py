@@ -139,3 +139,12 @@ def test_outlook365_end_to_end_incremental(tmp_path):
         assert app.state.indexer.status["sources"]["Outlook 365"]["new"] == 0
     finally:
         ix.build = orig
+
+
+def test_friendly_microsoft_errors():
+    from secondbrain.m365 import friendly
+    raw = "AADSTS700016: Application with identifier 'b1f7' was not found in the directory '427b'. Trace ID: x"
+    f = friendly(raw)
+    assert "non l'ID del tuo utente" in f and "AADSTS700016" in f and "Trace ID" not in f
+    assert "amministratore" in friendly("AADSTS65001: The user or administrator has not consented")
+    assert friendly("errore sconosciuto\r\nTrace") == "errore sconosciuto"

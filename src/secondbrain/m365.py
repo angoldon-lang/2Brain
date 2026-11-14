@@ -15,6 +15,25 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 SCOPES = ["Mail.Read"]          # offline_access è aggiunto da msal. Sola lettura: l'app non può inviare né cancellare.
 
 
+def friendly(desc: str) -> str:
+    """Traduce gli errori più comuni di Microsoft Entra in azioni concrete."""
+    import re
+    m = re.search(r"AADSTS\d+", desc or "")
+    code = m.group(0) if m else ""
+    hints = {
+        "AADSTS700016": "L'ID applicazione non esiste in questa directory. Deve essere l'«ID applicazione (client)» di un'app "
+                        "registrata (Registrazioni app → SecondBrain → Panoramica), non l'ID del tuo utente.",
+        "AADSTS7000218": "Nell'app registrata attiva Autenticazione → «Consenti flussi client pubblici» = Sì.",
+        "AADSTS70002": "Nell'app registrata attiva Autenticazione → «Consenti flussi client pubblici» = Sì.",
+        "AADSTS65001": "Serve il consenso dell'amministratore per il permesso Mail.Read: chiedilo all'IT.",
+        "AADSTS90094": "Serve il consenso dell'amministratore per il permesso Mail.Read: chiedilo all'IT.",
+        "AADSTS900971": "Tenant non valido: usa l'ID directory o il dominio aziendale (es. azienda.com).",
+        "AADSTS90002": "Tenant non trovato: controlla l'ID directory o il dominio aziendale.",
+    }
+    msg = hints.get(code)
+    return f"{msg} ({code})" if msg else (desc or "accesso non riuscito").split("\r")[0][:300]
+
+
 class M365Auth:
     """Tiene client id/tenant (nel database) e il token (file 0600 in data_dir)."""
 
@@ -58,7 +77,7 @@ class M365Auth:
         app, cache = self._app()
         flow = app.initiate_device_flow(scopes=SCOPES)
         if "user_code" not in flow:
-            raise RuntimeError(flow.get("error_description", "avvio accesso non riuscito"))
+            raise RuntimeError(friendly(flow.get("error_description", "")))
         self.flow, self.state, self.error = flow, "pending", None
 
         def wait():
@@ -69,7 +88,7 @@ class M365Auth:
                     self.state, self.flow = "signed_in", None
                 else:
                     self.state, self.flow = "error", None
-                    self.error = res.get("error_description", "accesso non riuscito").split("\r")[0]
+                    self.error = friendly(res.get("error_description", ""))
         threading.Thread(target=wait, daemon=True).start()
 
     def account(self):
