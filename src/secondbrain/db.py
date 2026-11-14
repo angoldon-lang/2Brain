@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sqlite3, threading
+import sqlite3, threading, time
 import numpy as np
 
 SCHEMA = """
@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS documents(
 CREATE TABLE IF NOT EXISTS chunks(
   id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   idx INTEGER, page INTEGER, text TEXT NOT NULL, emb BLOB);
+CREATE TABLE IF NOT EXISTS issues(
+  source TEXT NOT NULL, key TEXT NOT NULL, location TEXT, reason TEXT, at REAL, UNIQUE(source, key));
 CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 """
@@ -21,6 +23,10 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        cols = [r[1] for r in self.db.execute("PRAGMA table_info(documents)")]
+        if "indexed_at" not in cols:  # migrazione da 0.1
+            self.db.execute("ALTER TABLE documents ADD COLUMN indexed_at REAL")
+            self.db.commit()
         self.lock = threading.RLock()
 
     def doc_state(self, source):
@@ -37,8 +43,8 @@ class Store:
     def add_doc(self, d: dict, chunks: list[tuple[int, int, str, np.ndarray | None]]):
         with self.lock:
             cur = self.db.execute(
-                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size) VALUES(?,?,?,?,?,?,?,?)",
-                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"]))
+                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"], time.time()))
             did = cur.lastrowid
             for idx, page, text, emb in chunks:
                 c = self.db.execute("INSERT INTO chunks(doc_id,idx,page,text,emb) VALUES(?,?,?,?,?)",
@@ -92,3 +98,58 @@ class Store:
         with self.lock:
             return {"documents": self.db.execute("SELECT count(*) FROM documents").fetchone()[0],
                     "chunks": self.db.execute("SELECT count(*) FROM chunks").fetchone()[0]}
+
+    # --- stato file -------------------------------------------------------
+    def set_issue(self, source, key, location, reason):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO issues(source,key,location,reason,at) VALUES(?,?,?,?,?)",
+                            (source, key, location, reason, time.time()))
+            self.db.commit()
+
+    def sync_issues(self, source, keep_keys):
+        """Elimina le segnalazioni di file non più in errore / non più presenti."""
+        with self.lock:
+            old = [r[0] for r in self.db.execute("SELECT key FROM issues WHERE source=?", (source,))]
+            for k in old:
+                if k not in keep_keys:
+                    self.db.execute("DELETE FROM issues WHERE source=? AND key=?", (source, k))
+            self.db.commit()
+
+    def clear_issue(self, source, key):
+        with self.lock:
+            self.db.execute("DELETE FROM issues WHERE source=? AND key=?", (source, key))
+            self.db.commit()
+
+    def issues(self, source=None, limit=500):
+        sql, args = "SELECT source,key,location,reason,at FROM issues", []
+        if source:
+            sql += " WHERE source=?"; args.append(source)
+        with self.lock:
+            return [dict(r) for r in self.db.execute(sql + " ORDER BY at DESC LIMIT ?", args + [limit])]
+
+    def source_stats(self):
+        with self.lock:
+            out = {}
+            for r in self.db.execute("SELECT d.source, count(DISTINCT d.id) docs, count(c.id) chunks, max(d.indexed_at) last "
+                                     "FROM documents d LEFT JOIN chunks c ON c.doc_id=d.id GROUP BY d.source"):
+                out[r["source"]] = {"documents": r["docs"], "chunks": r["chunks"], "last_indexed": r["last"], "kinds": {}}
+            for r in self.db.execute("SELECT source, kind, count(*) n FROM documents GROUP BY source, kind"):
+                out[r["source"]]["kinds"][r["kind"]] = r["n"]
+            for r in self.db.execute("SELECT source, count(*) n FROM issues GROUP BY source"):
+                out.setdefault(r["source"], {"documents": 0, "chunks": 0, "last_indexed": None, "kinds": {}})["issues"] = r["n"]
+            return out
+
+    def list_documents(self, source=None, q=None, limit=50, offset=0):
+        where, args = [], []
+        if source:
+            where.append("source=?"); args.append(source)
+        if q:
+            where.append("(title LIKE ? OR location LIKE ?)"); args += [f"%{q}%"] * 2
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        with self.lock:
+            total = self.db.execute(f"SELECT count(*) FROM documents{w}", args).fetchone()[0]
+            rows = self.db.execute(
+                f"SELECT d.id,d.source,d.title,d.location,d.kind,d.size,d.indexed_at,"
+                f"(SELECT count(*) FROM chunks c WHERE c.doc_id=d.id) chunks FROM documents d{w} "
+                f"ORDER BY d.indexed_at DESC, d.id DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+        return {"total": total, "items": [dict(r) for r in rows]}

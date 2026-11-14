@@ -33,7 +33,7 @@ def run(app):
 def test_search_and_preview_keyword_only(tmp_path):
     _, app = make(tmp_path, None)
     c = run(app)
-    assert app.state.indexer.status["errors"] == []
+    assert c.get("/api/issues").json() == []
     assert c.get("/api/status").json()["documents"] == 3
     hits = c.get("/api/search", params={"q": "offerta Rossi importo"}).json()
     assert hits[0]["title"] == "offerta_rossi.txt"
@@ -100,3 +100,35 @@ def test_old_xls_with_xlsx_extension(tmp_path):
     wb.save(str(f))
     text = parse(f)[0][1]
     assert "Campagna" in text and "Budget 5000" in text
+
+
+def test_status_issues_and_documents(tmp_path):
+    docs, app = make(tmp_path, None)
+    (docs / "vuoto.txt").write_text("   ")           # nessun testo -> segnalato
+    (docs / "rotto.xlsx").write_bytes(b"non e un file office")
+    c = run(app)
+    st = c.get("/api/status").json()
+    from secondbrain import __version__
+    assert st["version"] == __version__
+    src = st["sources"][0]
+    assert src["documents"] == 3 and src["issues"] == 2
+    assert src["kinds"]["txt"] == 1 and src["live"]["state"] == "done"
+    assert src["live"]["total"] == 5 and src["live"]["failed"] == 2
+    reasons = {i["location"]: i["reason"] for i in c.get("/api/issues").json()}
+    assert "nessun testo" in reasons["Test/vuoto.txt"] and "valido" in reasons["Test/rotto.xlsx"]
+    lst = c.get("/api/documents", params={"q": "ferie"}).json()
+    assert lst["total"] == 1 and lst["items"][0]["chunks"] >= 1
+    # il file sistemato esce dalle segnalazioni al giro successivo
+    (docs / "vuoto.txt").write_text("adesso ho del testo")
+    app.state.indexer.run()
+    assert c.get("/api/status").json()["sources"][0]["issues"] == 1
+
+
+def test_migration_from_old_db(tmp_path):
+    import sqlite3
+    from secondbrain.db import Store
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY, source TEXT NOT NULL, key TEXT NOT NULL, title TEXT, location TEXT, file_path TEXT, kind TEXT, mtime REAL, size INTEGER, UNIQUE(source,key));")
+    con.close()
+    Store(path).source_stats()

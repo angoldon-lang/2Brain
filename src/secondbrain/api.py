@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from . import __version__
 from .db import Store
 from .embed import OllamaEmbedder
 from .indexer import Indexer
@@ -31,8 +32,26 @@ def create_app(cfg, embedder="auto") -> FastAPI:
 
     @app.get("/api/status")
     def status():
-        return {**store.stats(), "indexing": indexer.status, "semantic": embedder is not None,
-                "sources": [s.name for s in cfg.sources], "chat_model": cfg.chat_model}
+        stats = store.source_stats()
+        live = indexer.status["sources"]
+        sources = []
+        for s in cfg.sources:
+            st = stats.get(s.name, {"documents": 0, "chunks": 0, "last_indexed": None, "kinds": {}})
+            sources.append({"name": s.name, "type": s.type, "path": str(s.path), "issues": st.get("issues", 0),
+                            **{k: st[k] for k in ("documents", "chunks", "last_indexed", "kinds")},
+                            "live": live.get(s.name)})
+        return {"version": __version__, **store.stats(), "semantic": embedder is not None,
+                "chat_model": cfg.chat_model, "embed_model": cfg.embed_model,
+                "indexing": {"running": indexer.status["running"], "current": indexer.status["current"]},
+                "sources": sources}
+
+    @app.get("/api/documents")
+    def documents(source: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0):
+        return store.list_documents(source, q, min(limit, 200), offset)
+
+    @app.get("/api/issues")
+    def issues(source: str | None = None):
+        return store.issues(source)
 
     @app.post("/api/reindex")
     def reindex():

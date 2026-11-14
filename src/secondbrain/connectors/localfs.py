@@ -13,11 +13,13 @@ class FolderConnector:
     def __init__(self, source):
         self.source = source
         self.root = source.path
+        self.skipped: list[tuple[str, str, str]] = []
 
     def roots(self):
         return [self.root]
 
     def scan(self):
+        self.skipped = []
         if not self.root.exists():
             raise FileNotFoundError(f"{self.root} non esiste")
         for dp, dns, fns in os.walk(self.root):
@@ -33,6 +35,8 @@ class FolderConnector:
                     continue
                 # file OneDrive "solo online" (placeholder): saltati per non scatenare il download
                 if getattr(st, "st_blocks", 1) == 0 and st.st_size > 0:
+                    rel = p.relative_to(self.root)
+                    self.skipped.append((str(rel), f"{self.source.name}/{rel}", "solo online (OneDrive): non scaricato sul Mac"))
                     continue
                 rel = p.relative_to(self.root)
                 title = p.name

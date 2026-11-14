@@ -40,5 +40,8 @@ Il retrieval brute-force numpy va bene fino a ~200k frammenti; oltre, passare a 
 - Sicurezza: i contenuti indicizzati sono input non fidato (prompt injection da mail/doc): il modello
   in modalità delegata non ha strumenti con effetti, solo lettura e risposta.
 
+## Interfaccia
+Due schede: **Chiedi** (chat con fonti e anteprima) e **Stato file** (per ogni sorgente: avanzamento, file indicizzati per tipo, file saltati con il motivo, elenco filtrabile). La versione è nell’intestazione.
+
 ## Test
 `pip install -e ".[dev]" && pytest`
