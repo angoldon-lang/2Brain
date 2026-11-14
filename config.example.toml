@@ -1,0 +1,39 @@
+# Copia in config.toml e adatta.
+data_dir = "~/.secondbrain"          # indice SQLite + cache PST
+
+[ollama]
+host = "http://127.0.0.1:11434"
+chat_model = "qwen2.5:7b-instruct"   # su Mac 32GB+ prova "qwen2.5:14b-instruct"
+embed_model = "bge-m3"               # multilingue, ottimo per l'italiano
+
+[server]
+host = "127.0.0.1"                   # NON esporre su rete
+port = 8765
+
+[search]
+top_k = 8
+
+# --- Sorgenti ---------------------------------------------------------
+# OneDrive e SharePoint: sincronizza le librerie con il client OneDrive
+# ("Aggiungi collegamento a OneDrive"); su Mac appaiono in
+# ~/Library/CloudStorage/ e si indicizzano come cartelle normali.
+
+[[sources]]
+name = "Documenti"
+type = "folder"
+path = "~/Documents"
+
+[[sources]]
+name = "OneDrive"
+type = "folder"
+path = "~/Library/CloudStorage/OneDrive-NOMEAZIENDA"
+
+[[sources]]
+name = "SharePoint Team"
+type = "folder"
+path = "~/Library/CloudStorage/OneDrive-SharedLibraries-NOMEAZIENDA"
+
+[[sources]]
+name = "Outlook archivio"
+type = "pst"
+path = "~/Documents/Archivio.pst"   # richiede: brew install libpst
