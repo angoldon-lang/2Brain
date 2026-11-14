@@ -236,7 +236,7 @@ async function renderSorgenti(){const v=$('#sorgenti');
  <div class="sec"><h3>OneDrive e SharePoint</h3><p>Trovati sul tuo Mac (sincronizzati dall’app OneDrive). Un clic e li aggiungi.</p><div id="s-cloud"></div></div>
  <div class="sec"><h3>Cartelle e archivi Outlook</h3><p>Qualsiasi cartella del Mac, oppure un archivio <b>.pst</b> di Outlook.</p>
   <div class="row"><button class="pri" id="b-folder">Scegli una cartella…</button><button class="ghost" id="b-pst" style="padding:9px 14px">Scegli un file .pst…</button></div>
-  <details class="how"><summary>Inserisci il percorso a mano</summary><div class="row"><input id="s-path" placeholder="/Users/nome/Documents/Progetti"><button class="ghost" id="b-path">Aggiungi</button></div></details></div>
+  <details class="how"><summary>Inserisci il percorso a mano</summary><div class="row"><input id="s-path" autocomplete="off" placeholder="/Users/nome/Documents/Progetti"><button class="ghost" id="b-path">Aggiungi</button></div></details></div>
  <div class="sec"><h3>Outlook 365 (posta online)</h3><p>Legge la tua casella Microsoft 365 in sola lettura: l’app non può inviare né cancellare nulla.</p><div id="s-m365"></div></div>
  <div class="sec"><h3>Sorgenti attive</h3><div id="s-active"></div></div>`;
   $('#b-folder').onclick=()=>pickAndAdd('folder');$('#b-pst').onclick=()=>pickAndAdd('pst');
@@ -264,7 +264,7 @@ function renderM365(m){const b=$('#s-m365');clearTimeout(m365Timer);
   $('#m-add')&&($('#m-add').onclick=()=>addSource({type:'outlook365',months:+$('#m-months').value}));
   $('#m-out').onclick=async()=>{await post('/api/m365/logout');toast('Disconnesso');renderM365(await api('/api/m365'))};return}
  b.innerHTML=`${m.state==='error'?`<div class="err-t" style="margin-bottom:8px">⚠ ${esc(m.error)}</div>`:''}
-  <div class="row"><input id="m-cid" placeholder="ID applicazione (client)" value="${esc(m.client_id)}"><input id="m-ten" placeholder="ID directory (tenant)" value="${esc(m.tenant==='organizations'?'':m.tenant)}"></div>
+  <div class="row"><input id="m-cid" autocomplete="off" name="sb-client-id" placeholder="ID applicazione (client) — es. 1a2b3c4d-5e6f-…" value="${esc(m.client_id)}"><input id="m-ten" autocomplete="off" name="sb-tenant" placeholder="Tenant (es. azienda.com)" value="${esc(m.tenant==='organizations'?'':m.tenant)}"></div>
   <div class="row"><button class="pri" id="m-login">Accedi con Microsoft</button></div>
   <details class="how"><summary>Dove trovo questi due ID? (una tantum, 5 minuti)</summary><ol class="steps">
    <li>Vai su <b>entra.microsoft.com</b> → Applicazioni → Registrazioni app → <b>Nuova registrazione</b>.</li>
