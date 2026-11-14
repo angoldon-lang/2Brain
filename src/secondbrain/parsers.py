@@ -58,7 +58,7 @@ def parse_xls(path: Path) -> list[tuple[int, str]]:
     import xlrd
     try:
         wb = xlrd.open_workbook(str(path), on_demand=True)
-    except xlrd.XLRDError as e:
+    except Exception as e:
         raise ValueError(f"foglio Excel non leggibile (protetto da password o corrotto): {e}")
     out = []
     for i, ws in enumerate(wb.sheets()):
