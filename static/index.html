@@ -167,7 +167,7 @@ function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora 
  const c=el('div','sc',`<header><h3>${esc(s.name)}</h3>${badge}<span style="margin-left:auto" class="badge">${esc(s.type)}</span></header>
   <div class="path">${esc(s.path)}</div>${bar}${err}
   <div class="meta"><span><b>${fmt(s.documents)}</b> file indicizzati</span><span><b>${fmt(s.chunks)}</b> frammenti</span>
-   ${l&&l.total?`<span><b>${fmt(l.processed)}</b> / ${fmt(l.total)} esaminati</span>`:''}${e?`<span><b>${e}</b></span>`:''}<span>aggiornata <b>${ago(s.last_indexed)}</b></span></div>
+   ${l&&l.total?`<span><b>${fmt(l.processed)}</b> / ${fmt(l.total)} esaminati</span>`:''}${l&&l.unchanged?`<span><b>${fmt(l.unchanged)}</b> già aggiornati (saltati)</span>`:''}${l&&l.stale?`<span title="il lettore dei file è migliorato"><b>${fmt(l.stale)}</b> riletti per aggiornamento</span>`:''}${e?`<span><b>${e}</b></span>`:''}<span>aggiornata <b>${ago(s.last_indexed)}</b></span></div>
   <div class="kinds">${kinds}</div>`);
  if(s.issues||s.partial){const d=el('details','iss',`<summary>${s.issues?fmt(s.issues)+' non indicizzati':''}${s.issues&&s.partial?' · ':''}${s.partial?fmt(s.partial)+' parziali (file molto grandi)':''} — mostra il motivo</summary><ul><li>caricamento…</li></ul>`);
   d.ontoggle=async()=>{if(!d.open)return;const r=await (await fetch('/api/issues?source='+encodeURIComponent(s.name))).json();

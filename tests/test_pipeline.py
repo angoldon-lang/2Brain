@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 from secondbrain.config import Config, Source
 from secondbrain.api import create_app
@@ -292,3 +293,58 @@ def test_xlsx_grid_preview_highlights_original_row(tmp_path):
     a, b = g["hl"]
     assert any("ZEBRAROSA" in cell for n, cells in g["rows"][a:b + 1] for cell in cells)
     assert 21 in [n for n, _ in g["rows"][a:b + 1]] and g["width"] == 3
+
+
+def _restart(cfg):
+    return create_app(cfg, embedder=None)
+
+
+def test_restart_does_not_redo_indexed_files_even_from_older_database(tmp_path):
+    docs, app = make(tmp_path, None)
+    _docx(docs / "a.docx", ["offerta alfa"]); _docx(docs / "b.docx", ["offerta beta"])
+    run(app)
+    st = app.state.indexer.store
+    st.db.execute("UPDATE documents SET pv=1"); st.db.commit()      # database di una versione precedente
+    cfg = Config(data_dir=tmp_path / "data", sources=[Source("Test", "folder", docs)])
+    app2 = _restart(cfg)
+    app2.state.indexer.run()
+    s = app2.state.indexer.status["sources"]["Test"]
+    assert s["new"] == 0 and s["unchanged"] == 5                      # 5 file: tutti saltati
+
+
+def test_interrupted_run_resumes_and_is_recorded_as_interrupted(tmp_path, monkeypatch):
+    import secondbrain.indexer as ix
+    docs, app = make(tmp_path, None)
+    for i in range(6):
+        (docs / f"extra{i}.txt").write_text(f"documento extra numero {i}")
+    real, n = ix.chunk_pages, {"n": 0}
+
+    def boom(pages, *a, **k):
+        n["n"] += 1
+        if n["n"] == 5:
+            raise KeyboardInterrupt
+        return real(pages, *a, **k)
+    monkeypatch.setattr(ix, "chunk_pages", boom)
+    with pytest.raises(KeyboardInterrupt):
+        app.state.indexer.run()
+    done = app.state.indexer.store.stats()["documents"]
+    assert 0 < done < 9 and app.state.indexer.store.runs()[0]["state"] == "interrotta"
+    monkeypatch.setattr(ix, "chunk_pages", real)
+    cfg = Config(data_dir=tmp_path / "data", sources=[Source("Test", "folder", docs)])
+    app2 = _restart(cfg)
+    app2.state.indexer.run()
+    s = app2.state.indexer.status["sources"]["Test"]
+    assert s["new"] == 9 - done and app2.state.indexer.store.stats()["documents"] == 9
+
+
+def test_failed_scan_is_retried_when_ocr_becomes_available(tmp_path):
+    from pypdf import PdfWriter
+    docs, app = make(tmp_path, None)
+    w = PdfWriter(); w.add_blank_page(100, 100); w.write(docs / "scan.pdf")
+    run(app)
+    reasons = {i["location"]: i["reason"] for i in TestClient(app).get("/api/issues").json()}
+    assert "OCR non disponibile" in reasons["Test/scan.pdf"]
+    cfg = Config(data_dir=tmp_path / "data", sources=[Source("Test", "folder", docs)])
+    app2 = _restart(cfg)
+    app2.state.indexer.run()
+    assert app2.state.indexer.status["sources"]["Test"]["failed"] == 1     # riprovato (non memorizzato come definitivo)

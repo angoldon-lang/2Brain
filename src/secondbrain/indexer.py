@@ -32,7 +32,7 @@ class Indexer:
     def run(self):
         self.status.update(running=True, started_at=time.time())
         run_id = self.store.start_run()
-        notes, tot = [], {"processed": 0, "new": 0, "failed": 0}
+        notes, tot, finished = [], {"processed": 0, "new": 0, "failed": 0}, False
         try:
             while True:
                 self._rescan = False
@@ -40,8 +40,9 @@ class Indexer:
                 self.embed_pending()
                 if not self._rescan:
                     break
+            finished = True
         finally:
-            self.store.finish_run(run_id, "completata" if not notes else "con errori",
+            self.store.finish_run(run_id, "interrotta" if not finished else ("completata" if not notes else "con errori"),
                                   tot["processed"], tot["new"], tot["failed"], "; ".join(notes))
             self.status.update(running=False, current=None)
 
@@ -109,12 +110,16 @@ class Indexer:
             old = known.get(d.key)
             pv = parser_version(d.kind)
             if old and old[1] == d.mtime and old[2] == d.size and old[3] >= pv:
+                st["unchanged"] = st.get("unchanged", 0) + 1       # già indicizzato e invariato: si salta
                 if d.key in issue_known:          # file parziale: l'avviso resta finché il file non cambia
                     bad.add(d.key)
                 continue
+            if old and old[1] == d.mtime and old[2] == d.size:
+                st["stale"] = st.get("stale", 0) + 1               # riletto solo perché il lettore è migliorato
             ik = issue_known.get(d.key)
-            if not old and ik and ik[0] == d.mtime and ik[1] == d.size and ik[2] >= pv:
-                bad.add(d.key)                    # già fallito e invariato (stesso parser): non ritento ogni volta
+            if not old and ik and ik[0] == d.mtime and ik[1] == d.size and ik[2] >= pv \
+                    and "OCR non disponibile" not in ik[3]:        # (se l'OCR si installa, i PDF si riprovano)
+                bad.add(d.key)                    # già fallito e invariato: non ritento ogni volta
                 continue
             if old:
                 self.store.delete_doc(old[0])

@@ -156,8 +156,8 @@ class Store:
 
     def issue_state(self, source):
         with self.lock:
-            return {r["key"]: (r["mtime"], r["size"], r["pv"] or 0) for r in
-                    self.db.execute("SELECT key,mtime,size,pv FROM issues WHERE source=?", (source,))}
+            return {r["key"]: (r["mtime"], r["size"], r["pv"] or 0, r["reason"] or "") for r in
+                    self.db.execute("SELECT key,mtime,size,pv,reason FROM issues WHERE source=?", (source,))}
 
     def clear_issue(self, source, key):
         with self.lock:

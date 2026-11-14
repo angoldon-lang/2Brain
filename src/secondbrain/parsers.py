@@ -6,9 +6,11 @@ from pathlib import Path
 warnings.filterwarnings("ignore", module="openpyxl")
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
-# Alzare il numero di un tipo quando cambia il modo di estrarre il testo: i file di quel tipo vengono rielaborati
-# (compresi quelli che prima risultavano illeggibili).
-PARSER_VERSION = {"xlsx": 3, "xls": 3, "pdf": 2, "rtf": 2, "docx": 2, "pptx": 2}
+# ATTENZIONE: alzare il numero di un tipo fa RIFARE tutti i file indicizzati di quel tipo (ore di lavoro).
+# Va fatto solo se i file già letti con successo sono letti MALE dal vecchio codice. I file che prima fallivano
+# (OCR, file protetti…) vengono riprovati comunque, senza toccare questi numeri. Qui: fogli Excel (righe filtrate)
+# e RTF (prima letti come testo grezzo).
+PARSER_VERSION = {"xlsx": 3, "xls": 3, "rtf": 2}
 OLE = b"\xd0\xcf\x11\xe0"
 
 
