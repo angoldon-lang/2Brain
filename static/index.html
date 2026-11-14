@@ -39,6 +39,9 @@ main{flex:1;display:grid;grid-template-columns:minmax(380px,46%) 1fr;gap:14px;pa
 .src b{display:block;font-size:13.5px}.src small{display:block;color:var(--mut);word-break:break-all;font-size:12px}
 .src p{margin:3px 0 0;color:var(--mut);font-size:12.5px}
 form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+code{background:var(--card);border-radius:5px;padding:1px 5px;font-size:12px}
+.hint{margin:6px 0;color:var(--mut);font-size:12.5px;line-height:1.6}
+textarea{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font:12.5px ui-monospace,Menlo,monospace;outline:none;margin-top:6px}
 input,select{padding:10px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit;outline:none}
 input:focus{border-color:var(--acc)}form input{flex:1}
 button.pri{padding:9px 18px;border:0;border-radius:10px;background:var(--acc);color:#fff;font:inherit;font-weight:600;cursor:pointer}
@@ -156,9 +159,9 @@ function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora 
   <div class="meta"><span><b>${fmt(s.documents)}</b> file indicizzati</span><span><b>${fmt(s.chunks)}</b> frammenti</span>
    ${l&&l.total?`<span><b>${fmt(l.processed)}</b> / ${fmt(l.total)} esaminati</span>`:''}${e?`<span><b>${e}</b></span>`:''}<span>aggiornata <b>${ago(s.last_indexed)}</b></span></div>
   <div class="kinds">${kinds}</div>`);
- if(s.issues){const d=el('details','iss',`<summary>${fmt(s.issues)} file con avvisi (non indicizzati o parziali) — mostra il motivo</summary><ul><li>caricamento…</li></ul>`);
+ if(s.issues||s.partial){const d=el('details','iss',`<summary>${s.issues?fmt(s.issues)+' non indicizzati':''}${s.issues&&s.partial?' · ':''}${s.partial?fmt(s.partial)+' parziali (file molto grandi)':''} — mostra il motivo</summary><ul><li>caricamento…</li></ul>`);
   d.ontoggle=async()=>{if(!d.open)return;const r=await (await fetch('/api/issues?source='+encodeURIComponent(s.name))).json();
-   d.querySelector('ul').innerHTML=r.map(i=>`<li><em>${esc(i.location)}</em>${esc(i.reason)}</li>`).join('')+(r.length>=500?'<li>…(primi 500)</li>':'')};c.append(d)}
+   d.querySelector('ul').innerHTML=r.map(i=>`<li><em>${esc(i.location)}</em>${i.level==='partial'?'<b>Parziale:</b> ':''}${esc(i.reason)}</li>`).join('')+(r.length>=500?'<li>…(primi 500)</li>':'')};c.append(d)}
  return c}
 let built=false;
 function renderStato(){const v=$('#stato');if(!S)return;
@@ -171,7 +174,7 @@ function renderStato(){const v=$('#stato');if(!S)return;
  const issues=S.sources.reduce((a,s)=>a+s.issues,0);
  $('#kpis').innerHTML=`<div class="tot"><div class="kpi"><b>${fmt(S.documents)}</b><span>file indicizzati</span></div>
   <div class="kpi"><b>${fmt(S.chunks)}</b><span>frammenti ricercabili</span></div>
-  <div class="kpi"><b style="color:${issues?'var(--warn)':'var(--ok)'}">${fmt(issues)}</b><span>file con avvisi</span></div></div>
+  <div class="kpi"><b style="color:${issues?'var(--warn)':'var(--ok)'}">${fmt(issues)}</b><span>file non indicizzati</span></div></div>
   <div class="meta" style="margin-top:10px"><span>Modello chat <b>${esc(S.chat_model)}</b></span><span>Embedding <b>${esc(S.embed_model)}</b></span><span>Versione <b>${esc(S.version)}</b></span>
   <span>Anteprima originale <b>${S.office_preview?'disponibile':'non attiva'}</b></span></div>`;
  const cards=$('#cards');if(!cards.querySelector('details[open]')){cards.innerHTML='';S.sources.forEach(s=>cards.append(sourceCard(s)))}
@@ -251,7 +254,12 @@ function renderActive(list){const b=$('#s-active');b.innerHTML=list.length?'':'<
  list.forEach(s=>{const r=el('div','frow',`<span class="k">${s.type==='outlook365'?'365':s.type==='pst'?'PST':'DIR'}</span><div class="t"><b>${esc(s.name)}</b><small>${esc(TYPE[s.type]||s.type)} · ${esc(s.path)}</small></div>`);
   const x=el('button','ghost danger','Rimuovi');x.onclick=async()=>{if(!confirm(`Rimuovo «${s.name}» dall’indice?\nI file originali non vengono toccati.`))return;
    try{await api('/api/sources/'+encodeURIComponent(s.name),{method:'DELETE'});toast('Sorgente rimossa');renderSorgenti();status()}catch(e){toast(e.message,1)}};
-  r.append(x);r.style.cursor='default';b.append(r)})}
+  r.append(x);r.style.cursor='default';b.append(r);
+  if(s.type==='folder'){const d=el('details','how',`<summary>Escludi cartelle o file${s.exclude.length?` (${s.exclude.length} regole)`:''}</summary>
+   <p class="hint">Una regola per riga, valida per il nome di qualsiasi cartella o file del percorso: <code>Personale</code>, <code>Projects</code>, <code>*.tmp</code>, <code>M&amp;A--2026/Spada</code>. Sono già esclusi: node_modules, .git, *.log, package-lock.json, *.egg-info…</p>
+   <textarea rows="4" placeholder="Personale&#10;Projects">${esc(s.exclude.join('\n'))}</textarea><div class="row"><button class="pri">Salva e riapplica</button></div>`);
+   d.querySelector('button').onclick=async()=>{try{const r=await api('/api/sources/'+encodeURIComponent(s.name),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({exclude:d.querySelector('textarea').value.split('\n')})});
+    toast(r.reindexing?'Regole salvate: riapplico e tolgo dall’indice ciò che escludi…':'Regole salvate: premi Reindicizza a fine indicizzazione.');status()}catch(e){toast(e.message,1)}};b.append(d)}})}
 function renderM365(m){const b=$('#s-m365');clearTimeout(m365Timer);
  const has=srcList.some(s=>s.type==='outlook365');
  if(m.state==='pending'){b.innerHTML=`<div>1. Apri la pagina di accesso Microsoft e inserisci questo codice:</div><div class="code">${esc(m.user_code)}</div>

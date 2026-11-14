@@ -1,6 +1,6 @@
 [project]
 name = "secondbrain"
-version = "0.4.0"
+version = "0.5.0"
 description = "Assistente locale (Ollama) su file, OneDrive/SharePoint sincronizzati, PST Outlook"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,11 @@ dependencies = [
   "extract-msg>=0.48",
   "xlrd>=2.0.1",
   "msal>=1.28",
+  "striprtf>=0.0.26",
+  "msoffcrypto-tool>=5.4",
+  "olefile>=0.46",
+  "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

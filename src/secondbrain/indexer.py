@@ -55,6 +55,7 @@ class Indexer:
         name = conn.source.name
         st["state"] = "scanning"
         known = self.store.doc_state(name)
+        issue_known = self.store.issue_state(name)
         docs = sorted(conn.scan(), key=lambda d: d.mtime, reverse=True)   # prima i file più recenti
         st.update(state="indexing", total=len(docs), t0=time.time())
         seen, bad = set(), set()
@@ -67,19 +68,26 @@ class Indexer:
             old = known.get(d.key)
             pv = parser_version(d.kind)
             if old and old[1] == d.mtime and old[2] == d.size and old[3] >= pv:
+                if d.key in issue_known:          # file parziale: l'avviso resta finché il file non cambia
+                    bad.add(d.key)
+                continue
+            ik = issue_known.get(d.key)
+            if not old and ik and ik[0] == d.mtime and ik[1] == d.size and ik[2] >= pv:
+                bad.add(d.key)                    # già fallito e invariato (stesso parser): non ritento ogni volta
                 continue
             if old:
                 self.store.delete_doc(old[0])
             try:
                 chunks = chunk_pages(d.load())
-                if not chunks:
-                    raise ValueError("nessun testo estraibile (es. PDF scansionato/immagini)")
+                if not chunks:                        # file vuoto (log, __init__, .egg-info…): non è un problema
+                    st["empty"] = st.get("empty", 0) + 1
+                    continue
                 partial = len(chunks) > MAX_CHUNKS
                 chunks = chunks[:MAX_CHUNKS]
                 embs = self._embed([c[2] for c in chunks])
             except Exception as e:
                 log.warning("skip %s: %s", d.location, e)
-                self.store.set_issue(name, d.key, d.location, str(e))
+                self.store.set_issue(name, d.key, d.location, str(e), d.mtime, d.size, pv)
                 bad.add(d.key)
                 st["failed"] += 1
                 continue
@@ -89,7 +97,7 @@ class Indexer:
                                 "size": d.size, "pv": pv, "web_url": d.web_url}, rows)
             if partial:
                 self.store.set_issue(name, d.key, d.location,
-                                     f"indicizzato solo in parte: primi {MAX_CHUNKS} frammenti (file molto grande)")
+                                     f"indicizzato solo in parte: primi {MAX_CHUNKS} frammenti (file molto grande)", d.mtime, d.size, pv)
                 bad.add(d.key)
             st["new"] += 1
         for key, (doc_id, *_) in known.items():

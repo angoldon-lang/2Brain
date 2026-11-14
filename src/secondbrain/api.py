@@ -37,6 +37,10 @@ class SourceReq(BaseModel):
     months: int = 12
 
 
+class ExcludeReq(BaseModel):
+    exclude: list[str] = []
+
+
 class M365Req(BaseModel):
     client_id: str
     tenant: str = "organizations"
@@ -107,7 +111,7 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         sources = []
         for s in store.sources():
             st = stats.get(s.name, {"documents": 0, "chunks": 0, "last_indexed": None, "kinds": {}})
-            sources.append({"name": s.name, "type": s.type, "path": s.display(), "issues": st.get("issues", 0),
+            sources.append({"name": s.name, "type": s.type, "path": s.display(), "issues": st.get("issues", 0), "partial": st.get("partial", 0),
                             **{k: st[k] for k in ("documents", "chunks", "last_indexed", "kinds")},
                             "live": live.get(s.name)})
         return {"version": __version__, **store.stats(), "semantic": embedder is not None,
@@ -120,7 +124,17 @@ def create_app(cfg, embedder="auto") -> FastAPI:
     # --- gestione sorgenti ----------------------------------------------------
     @app.get("/api/sources")
     def list_sources():
-        return [{"name": s.name, "type": s.type, "path": s.display()} for s in store.sources()]
+        return [{"name": s.name, "type": s.type, "path": s.display(), "exclude": s.options.get("exclude", [])}
+                for s in store.sources()]
+
+    @app.patch("/api/sources/{name}")
+    def edit_source(name: str, req: ExcludeReq):
+        src = next((s for s in store.sources() if s.name == name), None)
+        if not src or src.type != "folder":
+            raise HTTPException(404)
+        pats = [p.strip() for p in req.exclude if p.strip()][:100]
+        store.update_source_options(name, {**src.options, "exclude": pats})
+        return {"exclude": pats, "reindexing": indexer.start()}
 
     @app.get("/api/sources/detect")
     def detect():

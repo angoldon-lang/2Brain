@@ -148,3 +148,63 @@ def test_friendly_microsoft_errors():
     assert "non l'ID del tuo utente" in f and "AADSTS700016" in f and "Trace ID" not in f
     assert "amministratore" in friendly("AADSTS65001: The user or administrator has not consented")
     assert friendly("errore sconosciuto\r\nTrace") == "errore sconosciuto"
+
+
+def test_exclusions_default_and_per_source(tmp_path):
+    folder = tmp_path / "docs"
+    for d in ("Personale", "Projects/app/node_modules", "Offerte"):
+        (folder / d).mkdir(parents=True)
+    (folder / "Personale" / "passaporto.txt").write_text("documento riservato")
+    (folder / "Projects/app/node_modules" / "x.txt").write_text("rumore dev")
+    (folder / "Projects/app" / "package-lock.json").write_text('{"a": "b"}')
+    (folder / "Projects/app" / "debug.log").write_text("log riga")
+    (folder / "Offerte" / "o.txt").write_text("offerta rack")
+    app = app_with(tmp_path)
+    c = TestClient(app)
+    c.post("/api/sources", json={"type": "folder", "path": str(folder), "name": "Doc"})
+    app.state.indexer._t.join(10)
+    titles = lambda: {d["title"] for d in c.get("/api/documents").json()["items"]}
+    assert titles() == {"passaporto.txt", "o.txt"}                 # rumore di sviluppo escluso di default
+    r = c.patch("/api/sources/Doc", json={"exclude": ["Personale"]}).json()
+    app.state.indexer._t.join(10)
+    assert titles() == {"o.txt"}                                   # ciò che era già indicizzato esce dall'indice
+    assert c.get("/api/sources").json()[0]["exclude"] == ["Personale"]
+    assert c.patch("/api/sources/Inesistente", json={"exclude": []}).status_code == 404
+
+
+def test_partial_warning_survives_next_run_and_failures_not_retried(tmp_path, monkeypatch):
+    import secondbrain.indexer as ix
+    monkeypatch.setattr(ix, "MAX_CHUNKS", 3)
+    folder = tmp_path / "d"; folder.mkdir()
+    (folder / "grande.txt").write_text(" ".join(f"w{i}" for i in range(2000)))
+    (folder / "rotto.xlsx").write_bytes(b"non office")
+    (folder / "vuoto.log2").write_text("")                          # estensione non supportata: ignorato
+    (folder / "vuoto.txt").write_text("  ")                         # vuoto: nessun avviso
+    app = app_with(tmp_path)
+    c = TestClient(app)
+    c.post("/api/sources", json={"type": "folder", "path": str(folder), "name": "D"})
+    app.state.indexer._t.join(10)
+    for _ in range(2):                                              # secondo giro: gli avvisi non spariscono
+        lv = {i["location"]: i["level"] for i in c.get("/api/issues").json()}
+        assert lv == {"D/grande.txt": "partial", "D/rotto.xlsx": "failed"}
+        app.state.indexer.run()
+    src = c.get("/api/status").json()["sources"][0]
+    assert src["issues"] == 1 and src["partial"] == 1
+    assert app.state.indexer.status["sources"]["D"]["failed"] == 0  # il file rotto invariato non è stato rielaborato
+
+
+def test_embedder_splits_413_and_truncates(monkeypatch):
+    import httpx, numpy as np
+    from secondbrain.embed import OllamaEmbedder
+    calls = []
+
+    def fake_post(url, json, timeout):
+        total = sum(len(t) for t in json["input"])
+        calls.append(len(json["input"]))
+        if total > 2000 or len(json["input"]) > 2:
+            req = httpx.Request("POST", url)
+            return httpx.Response(413, request=req)
+        return httpx.Response(200, json={"embeddings": [[1.0, 0.0] for _ in json["input"]]}, request=httpx.Request("POST", url))
+    monkeypatch.setattr(httpx, "post", fake_post)
+    v = OllamaEmbedder("http://x", "m")(["a" * 1500, "b" * 1500, "c" * 10000, "d"])
+    assert v.shape == (4, 2) and max(calls) >= 4 and 1 in calls   # batch diviso fino a riuscire

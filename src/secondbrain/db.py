@@ -34,6 +34,10 @@ class Store:
             self.db.execute("ALTER TABLE documents ADD COLUMN indexed_at REAL")
         if "pv" not in cols:          # versione del parser con cui è stato letto il file
             self.db.execute("ALTER TABLE documents ADD COLUMN pv INTEGER DEFAULT 1")
+        icols = [r[1] for r in self.db.execute("PRAGMA table_info(issues)")]
+        for col, typ in (("mtime", "REAL"), ("size", "INTEGER"), ("pv", "INTEGER")):
+            if col not in icols:      # per non ritentare ogni volta i file già falliti e invariati
+                self.db.execute(f"ALTER TABLE issues ADD COLUMN {col} {typ}")
         if "web_url" not in cols:     # link "Apri in Outlook" per i messaggi 365
             self.db.execute("ALTER TABLE documents ADD COLUMN web_url TEXT")
         self.db.execute("UPDATE runs SET finished=started, state='interrotta' WHERE finished IS NULL")
@@ -111,10 +115,10 @@ class Store:
                     "chunks": self.db.execute("SELECT count(*) FROM chunks").fetchone()[0]}
 
     # --- stato file -------------------------------------------------------
-    def set_issue(self, source, key, location, reason):
+    def set_issue(self, source, key, location, reason, mtime=None, size=None, pv=None):
         with self.lock:
-            self.db.execute("INSERT OR REPLACE INTO issues(source,key,location,reason,at) VALUES(?,?,?,?,?)",
-                            (source, key, location, reason, time.time()))
+            self.db.execute("INSERT OR REPLACE INTO issues(source,key,location,reason,at,mtime,size,pv) VALUES(?,?,?,?,?,?,?,?)",
+                            (source, key, location, reason, time.time(), mtime, size, pv))
             self.db.commit()
 
     def sync_issues(self, source, keep_keys):
@@ -126,6 +130,11 @@ class Store:
                     self.db.execute("DELETE FROM issues WHERE source=? AND key=?", (source, k))
             self.db.commit()
 
+    def issue_state(self, source):
+        with self.lock:
+            return {r["key"]: (r["mtime"], r["size"], r["pv"] or 0) for r in
+                    self.db.execute("SELECT key,mtime,size,pv FROM issues WHERE source=?", (source,))}
+
     def clear_issue(self, source, key):
         with self.lock:
             self.db.execute("DELETE FROM issues WHERE source=? AND key=?", (source, key))
@@ -136,7 +145,10 @@ class Store:
         if source:
             sql += " WHERE source=?"; args.append(source)
         with self.lock:
-            return [dict(r) for r in self.db.execute(sql + " ORDER BY at DESC LIMIT ?", args + [limit])]
+            rows = [dict(r) for r in self.db.execute(sql + " ORDER BY at DESC LIMIT ?", args + [limit])]
+        for r in rows:
+            r["level"] = "partial" if (r["reason"] or "").startswith("indicizzato solo in parte") else "failed"
+        return rows
 
     def source_stats(self):
         with self.lock:
@@ -146,8 +158,10 @@ class Store:
                 out[r["source"]] = {"documents": r["docs"], "chunks": r["chunks"], "last_indexed": r["last"], "kinds": {}}
             for r in self.db.execute("SELECT source, kind, count(*) n FROM documents GROUP BY source, kind"):
                 out[r["source"]]["kinds"][r["kind"]] = r["n"]
-            for r in self.db.execute("SELECT source, count(*) n FROM issues GROUP BY source"):
-                out.setdefault(r["source"], {"documents": 0, "chunks": 0, "last_indexed": None, "kinds": {}})["issues"] = r["n"]
+            for r in self.db.execute("SELECT source, sum(reason LIKE 'indicizzato solo in parte%') p, "
+                                     "sum(reason NOT LIKE 'indicizzato solo in parte%') f FROM issues GROUP BY source"):
+                o = out.setdefault(r["source"], {"documents": 0, "chunks": 0, "last_indexed": None, "kinds": {}})
+                o["partial"], o["issues"] = r["p"] or 0, r["f"] or 0
             return out
 
     def list_documents(self, source=None, q=None, limit=50, offset=0):
@@ -189,6 +203,11 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT name,type,path,options FROM sources ORDER BY added, name").fetchall()
         return [Source(r["name"], r["type"], Path(r["path"] or ""), json.loads(r["options"] or "{}")) for r in rows]
+
+    def update_source_options(self, name, options):
+        with self.lock:
+            self.db.execute("UPDATE sources SET options=? WHERE name=?", (json.dumps(options), name))
+            self.db.commit()
 
     def add_source(self, name, type_, path="", options=None):
         with self.lock:

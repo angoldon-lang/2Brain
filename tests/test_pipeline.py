@@ -111,17 +111,18 @@ def test_status_issues_and_documents(tmp_path):
     from secondbrain import __version__
     assert st["version"] == __version__
     src = st["sources"][0]
-    assert src["documents"] == 3 and src["issues"] == 2
+    assert src["documents"] == 3 and src["issues"] == 1
     assert src["kinds"]["txt"] == 1 and src["live"]["state"] == "done"
-    assert src["live"]["total"] == 5 and src["live"]["failed"] == 2
+    assert src["live"]["total"] == 5 and src["live"]["failed"] == 1 and src["live"]["empty"] == 1
     reasons = {i["location"]: i["reason"] for i in c.get("/api/issues").json()}
-    assert "nessun testo" in reasons["Test/vuoto.txt"] and "valido" in reasons["Test/rotto.xlsx"]
+    assert list(reasons) == ["Test/rotto.xlsx"] and "valido" in reasons["Test/rotto.xlsx"]   # il file vuoto non è un avviso
     lst = c.get("/api/documents", params={"q": "ferie"}).json()
     assert lst["total"] == 1 and lst["items"][0]["chunks"] >= 1
-    # il file sistemato esce dalle segnalazioni al giro successivo
+    # un file vuoto che si riempie viene indicizzato al giro successivo
     (docs / "vuoto.txt").write_text("adesso ho del testo")
     app.state.indexer.run()
-    assert c.get("/api/status").json()["sources"][0]["issues"] == 1
+    st2 = c.get("/api/status").json()
+    assert st2["sources"][0]["documents"] == 4 and st2["sources"][0]["issues"] == 1
 
 
 def test_migration_from_old_db(tmp_path):
@@ -183,3 +184,51 @@ def test_runs_history_and_office_pdf(tmp_path):
         did = c.get("/api/search", params={"q": "rack"}).json()[0]["doc_id"]
         resp = c.get(f"/api/pdf/{did}")
         assert resp.status_code == 200 and resp.content[:4] == b"%PDF"
+
+
+def test_rtf_is_converted_to_plain_text(tmp_path):
+    from secondbrain.parsers import parse
+    f = tmp_path / "off.rtf"
+    f.write_text(r"{\rtf1\ansi{\fonttbl\f0 Arial;}\f0 Offerta \b rack\b0  switch\par Totale 3.340 euro}")
+    t = parse(f)[0][1]
+    assert "Offerta" in t and "3.340" in t and "\\rtf" not in t and "fonttbl" not in t
+
+
+def test_encrypted_office_with_default_password_is_readable(tmp_path):
+    import openpyxl, msoffcrypto, pytest
+    from secondbrain.parsers import parse
+    plain = tmp_path / "plain.xlsx"
+    wb = openpyxl.Workbook(); wb.active["A1"] = "Provvigioni agenti"; wb.active["B1"] = "Rossi"
+    wb.save(plain)
+
+    def enc(pw, out):
+        with open(plain, "rb") as fi, open(out, "wb") as fo:
+            msoffcrypto.OfficeFile(fi).encrypt(pw, fo)
+    enc("VelvetSweatshop", tmp_path / "readonly.xlsx")      # «sola lettura consigliata»: si apre senza password
+    enc("segretissima", tmp_path / "locked.xlsx")
+    assert "Provvigioni agenti" in parse(tmp_path / "readonly.xlsx")[0][1]
+    with pytest.raises(ValueError, match="protetto da password"):
+        parse(tmp_path / "locked.xlsx")
+
+
+def test_spreadsheet_keeps_only_rows_with_text(tmp_path):
+    import openpyxl
+    from secondbrain.parsers import parse
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Descrizione", "Importo"])
+    ws.append(["Switch 48 porte", 1200.5])
+    for i in range(50):
+        ws.append([i, i * 2.5, "12,5%"])                      # righe di soli numeri: scartate
+    wb.save(tmp_path / "ce.xlsx")
+    t = parse(tmp_path / "ce.xlsx")[0][1]
+    assert "Switch 48 porte | 1200.5" in t and t.count("\n") <= 3
+
+
+def test_scanned_pdf_without_ocr_gives_clear_reason(tmp_path):
+    import pytest
+    from pypdf import PdfWriter
+    from secondbrain.parsers import parse
+    w = PdfWriter(); w.add_blank_page(200, 200)
+    f = tmp_path / "scan.pdf"; w.write(f)
+    with pytest.raises(ValueError, match="OCR"):
+        parse(f)

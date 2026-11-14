@@ -6,12 +6,18 @@ from pathlib import Path
 warnings.filterwarnings("ignore", module="openpyxl")
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
-# Alzare il numero di un tipo quando cambia il modo di estrarre il testo: i file di quel tipo vengono rielaborati.
-PARSER_VERSION = {"xlsx": 2, "xls": 2}
+# Alzare il numero di un tipo quando cambia il modo di estrarre il testo: i file di quel tipo vengono rielaborati
+# (compresi quelli che prima risultavano illeggibili).
+PARSER_VERSION = {"xlsx": 3, "xls": 3, "pdf": 2, "rtf": 2, "docx": 2, "pptx": 2}
+OLE = b"\xd0\xcf\x11\xe0"
 
 
 def parser_version(kind: str) -> int:
     return PARSER_VERSION.get(kind, 1)
+
+
+def _numlike(c: str) -> bool:
+    return re.fullmatch(r"[\d\s.,%€$£+\-/:()]+", c.strip()) is not None
 
 
 def _row(cells) -> str:
@@ -19,8 +25,14 @@ def _row(cells) -> str:
     return " | ".join(str(c).strip() for c in cells if c is not None and str(c).strip() != "")
 
 
-TEXT_EXT = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".rtf"}
-SUPPORTED = TEXT_EXT | {".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".htm", ".eml", ".msg"}
+def _sheet_text(title, rows) -> str:
+    """Tiene solo le righe con almeno una cella di testo: le tabelle di soli numeri non aiutano la ricerca."""
+    keep = [_row(r) for r in rows if any(isinstance(c, str) and c.strip() and not _numlike(c) for c in r)]
+    return f"[Foglio {title}]\n" + "\n".join(keep)
+
+
+TEXT_EXT = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml"}
+SUPPORTED = TEXT_EXT | {".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".htm", ".eml", ".msg", ".rtf"}
 
 
 def _strip_html(s: str) -> str:
@@ -44,27 +56,52 @@ def parse_eml_bytes(raw: bytes) -> tuple[str, str]:
     return str(m.get("subject", "") or ""), head + text
 
 
-def parse_docx_raw(path: Path) -> list[tuple[int, str]]:
+def parse_docx_raw(src) -> list[tuple[int, str]]:
     """Fallback per .docx con relazioni rotte (es. 'word/NULL'): legge direttamente l'XML."""
-    with zipfile.ZipFile(path) as z:
+    with zipfile.ZipFile(src) as z:
         xml = z.read("word/document.xml").decode("utf8", "ignore")
     xml = re.sub(r"</w:p>|<w:br[^>]*/>|<w:tab/>", "\n", xml)
     xml = re.sub(r"</w:tc>", " | ", xml)
     return [(1, html.unescape(re.sub(r"<[^>]+>", "", xml)))]
 
 
-def _check_container(path: Path, ext: str) -> None:
-    """Spiega perché un file OOXML non è leggibile, invece del generico 'not a zip file'."""
-    if ext not in {".docx", ".xlsx", ".pptx"}:
-        return
+def _ole_streams(path: Path) -> set[str]:
+    import olefile
+    try:
+        with olefile.OleFileIO(str(path)) as ole:
+            return {"/".join(s) for s in ole.listdir()}
+    except Exception:
+        raise ValueError("file Office non leggibile (protetto da password o danneggiato)")
+
+
+def _open_office(path: Path, ext: str):
+    """Sorgente per le librerie OOXML: il percorso, un file decifrato in memoria, oppure 'xls' per i vecchi fogli.
+    Gestisce i file «sola lettura consigliata» (cifrati con la password predefinita di Office)."""
     with open(path, "rb") as f:
         head = f.read(8)
-    if head.startswith(b"\xd0\xcf\x11\xe0"):
-        if ext == ".xlsx":
-            return  # vecchio .xls rinominato: lo gestisce parse_xls
-        raise ValueError("file protetto da password/IRM o in formato Office 97-2003 (OLE), non leggibile")
-    if not head.startswith(b"PK"):
+    if head.startswith(b"PK"):
+        return str(path)
+    if not head.startswith(OLE):
         raise ValueError("non è un file Office valido (corrotto, incompleto o rinominato)")
+    names = _ole_streams(path)
+    if "EncryptedPackage" in names:
+        import io, msoffcrypto
+        for pw in ("VelvetSweatshop", ""):
+            try:
+                of = msoffcrypto.OfficeFile(open(path, "rb"))
+                of.load_key(password=pw)
+                out = io.BytesIO()
+                of.decrypt(out)
+                out.seek(0)
+                return out
+            except Exception:
+                continue
+        raise ValueError("file protetto da password: non leggibile")
+    if ext in (".xlsx", ".xls") and ({"Workbook", "Book"} & names):
+        return "xls"
+    if ext == ".xlsx" or ext == ".xls":
+        raise ValueError("contenitore Office senza un foglio Excel leggibile")
+    raise ValueError("formato Office 97-2003 (.doc/.ppt): non supportato, salvalo come .docx/.pptx")
 
 
 def parse_xls(path: Path) -> list[tuple[int, str]]:
@@ -73,52 +110,56 @@ def parse_xls(path: Path) -> list[tuple[int, str]]:
         wb = xlrd.open_workbook(str(path), on_demand=True)
     except Exception as e:
         raise ValueError(f"foglio Excel non leggibile (protetto da password o corrotto): {e}")
-    out = []
-    for i, ws in enumerate(wb.sheets()):
-        rows = (_row(ws.row_values(r)) for r in range(ws.nrows))
-        out.append((i + 1, f"[Foglio {ws.name}]\n" + "\n".join(r for r in rows if r)))
-    return out
+    return [(i + 1, _sheet_text(ws.name, (ws.row_values(r) for r in range(ws.nrows))))
+            for i, ws in enumerate(wb.sheets())]
 
 
-def _is_ole(path: Path) -> bool:
-    with open(path, "rb") as f:
-        return f.read(4) == b"\xd0\xcf\x11\xe0"
+def parse_pdf(path: Path) -> list[tuple[int, str]]:
+    from pypdf import PdfReader
+    pages = [(i + 1, (p.extract_text() or "")) for i, p in enumerate(PdfReader(str(path)).pages)]
+    if sum(len(t.strip()) for _, t in pages) >= 20:
+        return pages
+    from . import ocr
+    if not ocr.available():
+        raise ValueError("scansione senza testo: OCR non disponibile (macOS: pip install -e . installa pyobjc)")
+    got = ocr.ocr_pdf(path)
+    if not got:
+        raise ValueError("nessun testo riconosciuto neppure con OCR (immagine vuota o illeggibile)")
+    return got
 
 
 def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
-    _check_container(path, ext)
-    if ext == ".xls" or (ext == ".xlsx" and _is_ole(path)):
-        return parse_xls(path)
     if ext == ".pdf":
-        from pypdf import PdfReader
-        r = PdfReader(str(path))
-        return [(i + 1, (p.extract_text() or "")) for i, p in enumerate(r.pages)]
-    if ext == ".docx":
-        import docx
-        try:
-            d = docx.Document(str(path))
-        except KeyError:
-            return parse_docx_raw(path)
-        parts = [p.text for p in d.paragraphs]
-        for t in d.tables:
-            for row in t.rows:
-                parts.append(" | ".join(c.text for c in row.cells))
-        return [(1, "\n".join(parts))]
-    if ext == ".xlsx":
-        import openpyxl
-        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-        out = []
-        for i, ws in enumerate(wb.worksheets):
-            rows = (_row(r) for r in ws.iter_rows(values_only=True))
-            out.append((i + 1, f"[Foglio {ws.title}]\n" + "\n".join(r for r in rows if r)))
-        return out
-    if ext == ".pptx":
-        from pptx import Presentation
-        out = []
-        for i, s in enumerate(Presentation(str(path)).slides):
-            out.append((i + 1, "\n".join(sh.text_frame.text for sh in s.shapes if sh.has_text_frame)))
-        return out
+        return parse_pdf(path)
+    if ext in (".docx", ".xlsx", ".xls", ".pptx"):
+        src = _open_office(path, ext) if ext != ".xls" else ("xls" if path.read_bytes()[:4] == OLE else str(path))
+        if src == "xls":
+            return parse_xls(path)
+        if ext == ".docx":
+            import docx
+            try:
+                d = docx.Document(src)
+            except KeyError:
+                if hasattr(src, "seek"):
+                    src.seek(0)
+                return parse_docx_raw(src)
+            parts = [p.text for p in d.paragraphs]
+            for t in d.tables:
+                for row in t.rows:
+                    parts.append(" | ".join(c.text for c in row.cells))
+            return [(1, "\n".join(parts))]
+        if ext == ".xlsx":
+            import openpyxl
+            wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+            return [(i + 1, _sheet_text(ws.title, ws.iter_rows(values_only=True))) for i, ws in enumerate(wb.worksheets)]
+        if ext == ".pptx":
+            from pptx import Presentation
+            return [(i + 1, "\n".join(sh.text_frame.text for sh in s.shapes if sh.has_text_frame))
+                    for i, s in enumerate(Presentation(src).slides)]
+    if ext == ".rtf":
+        from striprtf.striprtf import rtf_to_text
+        return [(1, rtf_to_text(path.read_text(errors="ignore"), errors="ignore"))]
     if ext in {".html", ".htm"}:
         return [(1, _strip_html(path.read_text(errors="ignore")))]
     if ext == ".eml":

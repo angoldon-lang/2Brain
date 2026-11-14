@@ -60,5 +60,19 @@ Due schede: **Chiedi** (chat con fonti e anteprima) e **Stato file** (per ogni s
 - La scheda **Stato file** mostra anche lo **storico** delle indicizzazioni.
 - Anteprima: "Testo trovato" (paragrafi originali, frammento evidenziato) per tutti i tipi; "Documento originale" per docx/xlsx/pptx richiede LibreOffice: `brew install --cask libreoffice` (opzionale). I PDF si aprono direttamente alla pagina giusta.
 
+## Cosa significano gli avvisi (scheda Stato file)
+| Messaggio | Significato / cosa fare |
+|---|---|
+| **indicizzato solo in parte** | File molto grande (es. fogli di costi con migliaia di righe): sono indicizzati i primi 400 frammenti. Informativo, il file resta cercabile. |
+| **scansione senza testo / OCR** | PDF fatto di immagini. Su macOS l'OCR locale (Apple Vision) si installa con `pip install -e .` (pyobjc) e legge le prime 40 pagine. |
+| **protetto da password** | File Office con password vera: non leggibile. I file «sola lettura consigliata» invece si leggono. |
+| formato 97-2003 (.doc/.ppt) | Salvali come .docx/.pptx. |
+Righe di soli numeri nei fogli Excel e file vuoti (log, `__init__`…) vengono ignorati senza avviso. I file falliti **non** sono riprovati a ogni avvio, solo se cambiano o se migliora l'app.
+
+### Escludere cartelle (privacy e rumore)
+Scheda **Sorgenti → Sorgenti attive → «Escludi cartelle o file»**: una regola per riga (`Personale`, `Projects`, `*.tmp`).
+Ciò che escludi esce anche dall'indice. Sempre esclusi: `node_modules`, `.git`, `*.log`, `package-lock.json`, `*.egg-info`…
+Consiglio: escludi documenti personali (identità, dichiarazioni) prima di attivare la modalità «sostituto» su Teams.
+
 ## Test
 `pip install -e ".[dev]" && pytest`
