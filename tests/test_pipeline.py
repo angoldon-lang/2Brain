@@ -86,3 +86,17 @@ def test_clear_error_for_encrypted_office(tmp_path):
     f.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"0" * 50)
     with pytest.raises(ValueError, match="protetto"):
         parse(f)
+
+
+def test_old_xls_with_xlsx_extension(tmp_path):
+    import pytest
+    xlwt = pytest.importorskip("xlwt")
+    from secondbrain.parsers import parse
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Marketing")
+    ws.write(0, 0, "Campagna")
+    ws.write(0, 1, "Budget 5000")
+    f = tmp_path / "SAL.xlsx"   # estensione sbagliata, contenuto BIFF
+    wb.save(str(f))
+    text = parse(f)[0][1]
+    assert "Campagna" in text and "Budget 5000" in text

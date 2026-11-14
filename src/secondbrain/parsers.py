@@ -7,7 +7,7 @@ warnings.filterwarnings("ignore", module="openpyxl")
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 TEXT_EXT = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".rtf"}
-SUPPORTED = TEXT_EXT | {".pdf", ".docx", ".xlsx", ".pptx", ".html", ".htm", ".eml", ".msg"}
+SUPPORTED = TEXT_EXT | {".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".htm", ".eml", ".msg"}
 
 
 def _strip_html(s: str) -> str:
@@ -47,14 +47,36 @@ def _check_container(path: Path, ext: str) -> None:
     with open(path, "rb") as f:
         head = f.read(8)
     if head.startswith(b"\xd0\xcf\x11\xe0"):
+        if ext == ".xlsx":
+            return  # vecchio .xls rinominato: lo gestisce parse_xls
         raise ValueError("file protetto da password/IRM o in formato Office 97-2003 (OLE), non leggibile")
     if not head.startswith(b"PK"):
         raise ValueError("non è un file Office valido (corrotto, incompleto o rinominato)")
 
 
+def parse_xls(path: Path) -> list[tuple[int, str]]:
+    import xlrd
+    try:
+        wb = xlrd.open_workbook(str(path), on_demand=True)
+    except xlrd.XLRDError as e:
+        raise ValueError(f"foglio Excel non leggibile (protetto da password o corrotto): {e}")
+    out = []
+    for i, ws in enumerate(wb.sheets()):
+        rows = (" | ".join(str(c) for c in ws.row_values(r)) for r in range(ws.nrows))
+        out.append((i + 1, f"[Foglio {ws.name}]\n" + "\n".join(rows)))
+    return out
+
+
+def _is_ole(path: Path) -> bool:
+    with open(path, "rb") as f:
+        return f.read(4) == b"\xd0\xcf\x11\xe0"
+
+
 def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
     _check_container(path, ext)
+    if ext == ".xls" or (ext == ".xlsx" and _is_ole(path)):
+        return parse_xls(path)
     if ext == ".pdf":
         from pypdf import PdfReader
         r = PdfReader(str(path))
