@@ -5,11 +5,17 @@ STEP = SIZE - OVERLAP
 MAX_CHUNKS = 400          # tetto per file (file enormi, es. fogli con decine di migliaia di righe)
 
 
+def clean(s):
+    """Toglie i caratteri non codificabili in UTF-8 (surrogati isolati che escono da PDF con codifica rovinata
+    o da nomi di file con byte non validi): né SQLite né Ollama li accettano."""
+    return s.encode("utf-8", "ignore").decode("utf-8") if isinstance(s, str) else s
+
+
 def chunk_pages(pages, size=SIZE, overlap=OVERLAP):
     """Spezza per parole mantenendo il numero di pagina. Ritorna [(idx, page, text)]."""
     out, idx = [], 0
     for page, text in pages:
-        words = text.split()
+        words = clean(text).split()
         if not words:
             continue
         step = size - overlap

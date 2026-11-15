@@ -61,18 +61,24 @@ class Store:
             self.db.commit()
 
     def add_doc(self, d: dict, chunks: list[tuple[int, int, str, np.ndarray | None]]):
+        """Tutto o niente: se un frammento non si può salvare, il documento non resta a metà."""
         with self.lock:
-            cur = self.db.execute(
-                "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at,pv,web_url) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"], time.time(), d.get("pv", 1), d.get("web_url")))
-            did = cur.lastrowid
-            for idx, page, text, emb in chunks:
-                c = self.db.execute("INSERT INTO chunks(doc_id,idx,page,text,emb) VALUES(?,?,?,?,?)",
-                                    (did, idx, page, text, emb.astype(np.float32).tobytes() if emb is not None else None))
-                self.db.execute("INSERT INTO chunks_fts(rowid,text) VALUES(?,?)",
-                                (c.lastrowid, f"{d['title']} {d['location']} {text}"))   # il nome del file è parte del contenuto
-            self.db.commit()
-            return did
+            try:
+                cur = self.db.execute(
+                    "INSERT INTO documents(source,key,title,location,file_path,kind,mtime,size,indexed_at,pv,web_url) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (d["source"], d["key"], d["title"], d["location"], d["file_path"], d["kind"], d["mtime"], d["size"],
+                     time.time(), d.get("pv", 1), d.get("web_url")))
+                did = cur.lastrowid
+                for idx, page, text, emb in chunks:
+                    c = self.db.execute("INSERT INTO chunks(doc_id,idx,page,text,emb) VALUES(?,?,?,?,?)",
+                                        (did, idx, page, text, emb.astype(np.float32).tobytes() if emb is not None else None))
+                    self.db.execute("INSERT INTO chunks_fts(rowid,text) VALUES(?,?)",
+                                    (c.lastrowid, f"{d['title']} {d['location']} {text}"))   # il nome del file è parte del contenuto
+                self.db.commit()
+                return did
+            except Exception:
+                self.db.rollback()
+                raise
 
     def fts(self, query: str, limit: int, sources=None):
         sql = ("SELECT c.id FROM chunks_fts f JOIN chunks c ON c.id=f.rowid JOIN documents d ON d.id=c.doc_id "

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging, threading, time
-from .chunk import MAX_CHUNKS, chunk_pages
+from .chunk import MAX_CHUNKS, chunk_pages, clean
 from .connectors import build
 from .parsers import parser_version
 
@@ -136,14 +136,22 @@ class Indexer:
                 chunks = chunks[:cap]
             except Exception as e:
                 log.warning("skip %s: %s", d.location, e)
-                self.store.set_issue(name, d.key, d.location, str(e), d.mtime, d.size, pv)
+                self.store.set_issue(name, clean(d.key), clean(d.location), clean(str(e)), d.mtime, d.size, pv)
                 bad.add(d.key)
                 st["failed"] += 1
                 continue
             rows = [(i, pg, t, None) for i, pg, t in chunks]
-            self.store.add_doc({"source": name, "key": d.key, "title": d.title, "location": d.location,
-                                "file_path": str(d.file_path), "kind": d.kind, "mtime": d.mtime,
-                                "size": d.size, "pv": pv, "web_url": d.web_url}, rows)
+            try:
+                self.store.add_doc({"source": name, "key": clean(d.key), "title": clean(d.title),
+                                    "location": clean(d.location), "file_path": clean(str(d.file_path)),
+                                    "kind": d.kind, "mtime": d.mtime, "size": d.size, "pv": pv,
+                                    "web_url": d.web_url}, rows)
+            except Exception as e:               # un file che non si può salvare non deve fermare gli altri
+                log.warning("skip %s: %s", d.location, e)
+                self.store.set_issue(name, clean(d.key), clean(d.location), f"non salvabile: {e}", d.mtime, d.size, pv)
+                bad.add(d.key)
+                st["failed"] += 1
+                continue
             if partial:
                 self.store.set_issue(name, d.key, d.location,
                                      f"indicizzato solo in parte: primi {cap} frammenti ({reached})", d.mtime, d.size, pv)

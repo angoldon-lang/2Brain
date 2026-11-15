@@ -379,3 +379,43 @@ def test_partial_message_says_how_far_it_got(tmp_path, monkeypatch):
     cl = run(app)
     r = next(i["reason"] for i in cl.get("/api/issues").json() if i["location"].endswith("libro.pdf"))
     assert "primi 2 frammenti" in r and "fino a pag." in r and " di " in r
+
+
+def test_text_with_lone_surrogate_is_cleaned_and_indexed(tmp_path, monkeypatch):
+    import secondbrain.connectors.localfs as lf
+    docs, app = make(tmp_path, None)
+    (docs / "libro.pdf").write_bytes(b"x")
+    real = lf.parse
+    monkeypatch.setattr(lf, "parse", lambda p: [(1, "Capitolo CWNA wireless rotto\udc04qui fine")]
+                        if p.suffix == ".pdf" else real(p))
+    c = run(app)
+    assert c.get("/api/issues").json() == []
+    hit = c.get("/api/search", params={"q": "CWNA wireless"}).json()[0]
+    assert "\udc04" not in hit["text"] and "rottoqui" in hit["text"]
+
+
+def test_add_doc_is_atomic(tmp_path):
+    from secondbrain.db import Store
+    st = Store(tmp_path / "x.db")
+    d = {"source": "S", "key": "k", "title": "t", "location": "l", "file_path": "/x", "kind": "txt", "mtime": 1.0, "size": 1}
+    with pytest.raises(UnicodeEncodeError):
+        st.add_doc(d, [(0, 1, "ok", None), (1, 1, "male\udc04", None)])
+    assert st.stats()["documents"] == 0 and st.stats()["chunks"] == 0      # niente documento a metà
+    st.add_doc(d, [(0, 1, "ok", None)])
+    assert st.stats()["documents"] == 1
+
+
+def test_one_unsavable_file_does_not_stop_the_source(tmp_path, monkeypatch):
+    docs, app = make(tmp_path, None)
+    store = app.state.indexer.store
+    real = store.add_doc
+
+    def flaky(d, chunks):
+        if d["title"] == "ferie.md":
+            raise RuntimeError("disco pieno")
+        return real(d, chunks)
+    monkeypatch.setattr(store, "add_doc", flaky)
+    c = run(app)
+    assert {d["title"] for d in c.get("/api/documents").json()["items"]} == {"offerta_rossi.txt", "Riunione budget"}
+    assert "non salvabile" in c.get("/api/issues").json()[0]["reason"]
+    assert app.state.indexer.status["sources"]["Test"]["state"] == "done"   # la sorgente non risulta in errore
