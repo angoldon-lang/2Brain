@@ -130,6 +130,9 @@ class Indexer:
                     continue
                 cap = MAX_CHUNKS_BY_KIND.get(d.kind, MAX_CHUNKS)
                 partial = len(chunks) > cap
+                if partial:
+                    unit = {"xlsx": "foglio", "xls": "foglio", "pptx": "slide"}.get(d.kind, "pag.")
+                    reached = f"fino a {unit} {chunks[cap - 1][1]} di {max(c[1] for c in chunks)}"
                 chunks = chunks[:cap]
             except Exception as e:
                 log.warning("skip %s: %s", d.location, e)
@@ -143,7 +146,7 @@ class Indexer:
                                 "size": d.size, "pv": pv, "web_url": d.web_url}, rows)
             if partial:
                 self.store.set_issue(name, d.key, d.location,
-                                     f"indicizzato solo in parte: primi {cap} frammenti (file molto grande)", d.mtime, d.size, pv)
+                                     f"indicizzato solo in parte: primi {cap} frammenti ({reached})", d.mtime, d.size, pv)
                 bad.add(d.key)
             st["new"] += 1
         for key, (doc_id, *_) in known.items():

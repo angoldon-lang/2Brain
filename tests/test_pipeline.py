@@ -348,3 +348,34 @@ def test_failed_scan_is_retried_when_ocr_becomes_available(tmp_path):
     app2 = _restart(cfg)
     app2.state.indexer.run()
     assert app2.state.indexer.status["sources"]["Test"]["failed"] == 1     # riprovato (non memorizzato come definitivo)
+
+
+def _pdf_with_text(path, text):
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(str(path)); c.drawString(72, 720, text); c.save()
+
+
+def test_pdf_with_malformed_encrypt_falls_back_to_pdfium(tmp_path):
+    from secondbrain.parsers import parse
+    f = tmp_path / "ok.pdf"
+    _pdf_with_text(f, "CWNA study guide wireless offerta Bper importo 9800")
+    raw = f.read_bytes()
+    (tmp_path / "bad.pdf").write_bytes(raw.replace(b"trailer\n<<", b"trailer\n<</Encrypt 99 0 R ", 1))
+    import pypdf
+    with pytest.raises(Exception, match="Encrypt"):
+        pypdf.PdfReader(str(tmp_path / "bad.pdf"))                 # il caso reale: pypdf rinuncia
+    assert "Bper importo 9800" in parse(tmp_path / "bad.pdf")[0][1]  # la riserva lo legge
+
+
+def test_partial_message_says_how_far_it_got(tmp_path, monkeypatch):
+    import secondbrain.indexer as ix
+    monkeypatch.setattr(ix, "MAX_CHUNKS", 2)
+    docs, app = make(tmp_path, None)
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(str(docs / "libro.pdf"))
+    for pg in range(1, 7):
+        c.drawString(72, 720, " ".join(f"p{pg}w{i}" for i in range(250))[:1500]); c.showPage()
+    c.save()
+    cl = run(app)
+    r = next(i["reason"] for i in cl.get("/api/issues").json() if i["location"].endswith("libro.pdf"))
+    assert "primi 2 frammenti" in r and "fino a pag." in r and " di " in r

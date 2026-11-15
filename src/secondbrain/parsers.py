@@ -119,11 +119,38 @@ def parse_xls(path: Path) -> list[tuple[int, str]]:
             for i, ws in enumerate(wb.sheets())]
 
 
-def parse_pdf(path: Path) -> list[tuple[int, str]]:
+def _pdf_pages_pypdf(path: Path):
     from pypdf import PdfReader
-    pages = [(i + 1, (p.extract_text() or "")) for i, p in enumerate(PdfReader(str(path)).pages)]
-    if sum(len(t.strip()) for _, t in pages) >= 20:
-        return pages
+    return [(i + 1, (p.extract_text() or "")) for i, p in enumerate(PdfReader(str(path)).pages)]
+
+
+def _pdf_pages_pdfium(path: Path):
+    """Riserva per i PDF con struttura rovinata o protezioni mal formate (es. «/Encrypt … is not a dictionary»)."""
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        return [(i + 1, pdf[i].get_textpage().get_text_range()) for i in range(len(pdf))]
+    finally:
+        pdf.close()
+
+
+def parse_pdf(path: Path) -> list[tuple[int, str]]:
+    pages, errors = None, []
+    for reader in (_pdf_pages_pypdf, _pdf_pages_pdfium):
+        try:
+            got = reader(path)
+        except Exception as e:
+            errors.append(str(e))
+            continue
+        if sum(len(t.strip()) for _, t in got) >= 20:
+            return got
+        pages = got if pages is None else pages
+        break                                   # letto bene ma senza testo: è una scansione, non un errore del lettore
+    if pages is None:
+        msg = " ".join(errors)
+        if "password" in msg.lower() or "decrypt" in msg.lower():
+            raise ValueError("PDF protetto da password: non leggibile")
+        raise ValueError(f"PDF non leggibile: {errors[-1][:120] if errors else 'errore sconosciuto'}")
     from . import ocr
     if not ocr.available():
         raise ValueError("scansione senza testo: OCR non disponibile (macOS: pip install -e . installa pyobjc)")
