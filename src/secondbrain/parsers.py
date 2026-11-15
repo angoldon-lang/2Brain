@@ -11,6 +11,9 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 # (OCR, file protetti…) vengono riprovati comunque, senza toccare questi numeri. Qui: fogli Excel (righe filtrate)
 # e RTF (prima letti come testo grezzo).
 PARSER_VERSION = {"xlsx": 3, "xls": 3, "rtf": 2}
+# Diversa: alzare READER_GEN quando migliora la lettura dei file CHE FALLIVANO. Fa riprovare solo i file falliti
+# (pochi), senza toccare quelli già indicizzati bene.
+READER_GEN = 4
 OLE = b"\xd0\xcf\x11\xe0"
 
 
@@ -62,12 +65,48 @@ def parse_eml_bytes(raw: bytes) -> tuple[str, str]:
 
 
 def parse_docx_raw(src) -> list[tuple[int, str]]:
-    """Fallback per .docx con relazioni rotte (es. 'word/NULL'): legge direttamente l'XML."""
-    with zipfile.ZipFile(src) as z:
-        xml = z.read("word/document.xml").decode("utf8", "ignore")
+    """Fallback per .docx con relazioni o parti rotte (es. 'word/NULL', XML non valido): legge solo il testo del corpo."""
+    try:
+        with zipfile.ZipFile(src) as z:
+            xml = z.read("word/document.xml").decode("utf8", "ignore")
+    except Exception:
+        raise ValueError("documento Word non leggibile (struttura interna danneggiata)")
     xml = re.sub(r"</w:p>|<w:br[^>]*/>|<w:tab/>", "\n", xml)
     xml = re.sub(r"</w:tc>", " | ", xml)
     return [(1, html.unescape(re.sub(r"<[^>]+>", "", xml)))]
+
+
+def parse_pptx_raw(src) -> list[tuple[int, str]]:
+    """Fallback per .pptx con parti rovinate (es. «Bad CRC-32» su un'immagine): legge solo il testo delle slide."""
+    out = []
+    try:
+        with zipfile.ZipFile(src) as z:
+            names = sorted((n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                           key=lambda n: int(re.findall(r"\d+", n)[0]))
+            for i, n in enumerate(names):
+                try:
+                    xml = z.read(n).decode("utf8", "ignore")
+                except Exception:
+                    continue
+                out.append((i + 1, html.unescape("\n".join(re.findall(r"<a:t>([^<]*)</a:t>", xml)))))
+    except Exception:
+        pass
+    if not out:
+        raise ValueError("presentazione non leggibile (struttura interna danneggiata)")
+    return out
+
+
+def _sniff(path: Path, head: bytes):
+    """File con estensione Office ma contenuto di altro tipo (RTF, HTML, PDF salvati come .docx): si legge com'è."""
+    h = head.lstrip()[:512]
+    if h.startswith(b"{\\rtf"):
+        from striprtf.striprtf import rtf_to_text
+        return [(1, rtf_to_text(path.read_text(errors="ignore"), errors="ignore"))]
+    if h[:5].lower() in (b"<html", b"<!doc") or h.startswith(b"<?xml") or b"<html" in h.lower():
+        return [(1, _strip_html(path.read_text(errors="ignore")))]
+    if h.startswith(b"%PDF"):
+        return parse_pdf(path)
+    return None
 
 
 def _ole_streams(path: Path) -> set[str]:
@@ -87,7 +126,7 @@ def _open_office(path: Path, ext: str):
     if head.startswith(b"PK"):
         return str(path)
     if not head.startswith(OLE):
-        raise ValueError("non è un file Office valido (corrotto, incompleto o rinominato)")
+        raise ValueError(f"non è un file Office valido (corrotto, incompleto o rinominato; inizia con {head[:6].hex(' ')})")
     names = _ole_streams(path)
     if "EncryptedPackage" in names:
         import io, msoffcrypto
@@ -109,19 +148,38 @@ def _open_office(path: Path, ext: str):
     raise ValueError("formato Office 97-2003 (.doc/.ppt): non supportato, salvalo come .docx/.pptx")
 
 
-def parse_xls(path: Path) -> list[tuple[int, str]]:
+def _xls_open(path: Path):
     import xlrd
     try:
-        wb = xlrd.open_workbook(str(path), on_demand=True)
+        return xlrd.open_workbook(str(path), on_demand=True)
     except Exception as e:
-        raise ValueError(f"foglio Excel non leggibile (protetto da password o corrotto): {e}")
+        if "encrypted" in str(e).lower():       # cifrato con la password predefinita di Office («sola lettura»)
+            import io, msoffcrypto
+            for pw in ("VelvetSweatshop", ""):
+                try:
+                    of = msoffcrypto.OfficeFile(open(path, "rb"))
+                    of.load_key(password=pw)
+                    out = io.BytesIO()
+                    of.decrypt(out)
+                    return xlrd.open_workbook(file_contents=out.getvalue())
+                except Exception:
+                    continue
+            raise ValueError("foglio Excel protetto da password: non leggibile")
+        raise ValueError(f"foglio Excel non leggibile (danneggiato): {e}")
+
+
+def parse_xls(path: Path) -> list[tuple[int, str]]:
+    wb = _xls_open(path)
     return [(i + 1, _sheet_text(ws.name, (ws.row_values(r) for r in range(ws.nrows))))
             for i, ws in enumerate(wb.sheets())]
 
 
 def _pdf_pages_pypdf(path: Path):
     from pypdf import PdfReader
-    return [(i + 1, (p.extract_text() or "")) for i, p in enumerate(PdfReader(str(path)).pages)]
+    r = PdfReader(str(path))
+    if r.is_encrypted:
+        r.decrypt("")       # molti PDF sono «protetti» solo contro copia/stampa: password utente vuota
+    return [(i + 1, (p.extract_text() or "")) for i, p in enumerate(r.pages)]
 
 
 def _pdf_pages_pdfium(path: Path):
@@ -135,6 +193,8 @@ def _pdf_pages_pdfium(path: Path):
 
 
 def parse_pdf(path: Path) -> list[tuple[int, str]]:
+    if path.stat().st_size == 0:
+        return []               # file da 0 byte: non è un problema, semplicemente non c'è nulla
     pages, errors = None, []
     for reader in (_pdf_pages_pypdf, _pdf_pages_pdfium):
         try:
@@ -171,8 +231,7 @@ def grid_rows(path: Path, page: int) -> list[tuple[int, list[str]]]:
     src = _resolve(path, ext)
     out = []
     if src == "xls" or ext == ".xls":
-        import xlrd
-        ws = xlrd.open_workbook(str(path), on_demand=True).sheets()[page - 1]
+        ws = _xls_open(path).sheets()[page - 1]
         for r in range(ws.nrows):
             cells = ws.row_values(r)
             if _keep_row(cells):
@@ -190,6 +249,13 @@ def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
     if ext == ".pdf":
         return parse_pdf(path)
+    if ext in (".docx", ".xlsx", ".pptx"):
+        with open(path, "rb") as f:
+            head = f.read(600)
+        if not head.startswith(b"PK") and not head.startswith(OLE):
+            got = _sniff(path, head)
+            if got is not None:
+                return got
     if ext in (".docx", ".xlsx", ".xls", ".pptx"):
         src = _resolve(path, ext)
         if src == "xls":
@@ -198,7 +264,7 @@ def parse(path: Path) -> list[tuple[int, str]]:
             import docx
             try:
                 d = docx.Document(src)
-            except KeyError:
+            except Exception:                       # parti rotte (KeyError, XML non valido…): solo il testo del corpo
                 if hasattr(src, "seek"):
                     src.seek(0)
                 return parse_docx_raw(src)
@@ -213,8 +279,13 @@ def parse(path: Path) -> list[tuple[int, str]]:
             return [(i + 1, _sheet_text(ws.title, ws.iter_rows(values_only=True))) for i, ws in enumerate(wb.worksheets)]
         if ext == ".pptx":
             from pptx import Presentation
-            return [(i + 1, "\n".join(sh.text_frame.text for sh in s.shapes if sh.has_text_frame))
-                    for i, s in enumerate(Presentation(src).slides)]
+            try:
+                return [(i + 1, "\n".join(sh.text_frame.text for sh in s.shapes if sh.has_text_frame))
+                        for i, s in enumerate(Presentation(src).slides)]
+            except Exception:
+                if hasattr(src, "seek"):
+                    src.seek(0)
+                return parse_pptx_raw(src)
     if ext == ".rtf":
         from striprtf.striprtf import rtf_to_text
         return [(1, rtf_to_text(path.read_text(errors="ignore"), errors="ignore"))]

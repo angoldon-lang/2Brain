@@ -2,11 +2,12 @@ from __future__ import annotations
 import logging, threading, time
 from .chunk import MAX_CHUNKS, chunk_pages, clean
 from .connectors import build
-from .parsers import parser_version
+from .parsers import READER_GEN, parser_version
 
 log = logging.getLogger("secondbrain.indexer")
 BATCH = 32
-MAX_CHUNKS_BY_KIND = {"xlsx": 150, "xls": 150}      # i fogli di costi sono enormi e pieni di numeri: bastano i primi frammenti
+MAX_CHUNKS_BY_KIND = {"xlsx": 200, "xls": 200}      # i fogli di costi sono enormi e pieni di numeri
+PER_SHEET_CAP = {"xlsx": 30, "xls": 30}             # tetto per foglio: così un foglio-dati enorme non fa sparire gli altri
 
 
 class Indexer:
@@ -117,7 +118,7 @@ class Indexer:
             if old and old[1] == d.mtime and old[2] == d.size:
                 st["stale"] = st.get("stale", 0) + 1               # riletto solo perché il lettore è migliorato
             ik = issue_known.get(d.key)
-            if not old and ik and ik[0] == d.mtime and ik[1] == d.size and ik[2] >= pv \
+            if not old and ik and ik[0] == d.mtime and ik[1] == d.size and ik[2] >= READER_GEN \
                     and "OCR non disponibile" not in ik[3]:        # (se l'OCR si installa, i PDF si riprovano)
                 bad.add(d.key)                    # già fallito e invariato: non ritento ogni volta
                 continue
@@ -129,14 +130,26 @@ class Indexer:
                     st["empty"] = st.get("empty", 0) + 1
                     continue
                 cap = MAX_CHUNKS_BY_KIND.get(d.kind, MAX_CHUNKS)
-                partial = len(chunks) > cap
-                if partial:
+                partial, reached = False, ""
+                sc = PER_SHEET_CAP.get(d.kind)
+                if sc:                                     # fogli: al massimo N frammenti per foglio
+                    seen_n, kept = {}, []
+                    for c in chunks:
+                        seen_n[c[1]] = seen_n.get(c[1], 0) + 1
+                        if seen_n[c[1]] <= sc:
+                            kept.append(c)
+                    if len(kept) < len(chunks):
+                        partial, reached = True, f"primi {sc} frammenti per foglio"
+                    chunks = kept
+                if len(chunks) > cap:
                     unit = {"xlsx": "foglio", "xls": "foglio", "pptx": "slide"}.get(d.kind, "pag.")
-                    reached = f"fino a {unit} {chunks[cap - 1][1]} di {max(c[1] for c in chunks)}"
-                chunks = chunks[:cap]
+                    last_pg = max(c[1] for c in chunks)
+                    partial = True
+                    reached = f"fino a {unit} {chunks[cap - 1][1]} di {last_pg}" if last_pg > 1 else f"primi {cap} frammenti"
+                    chunks = chunks[:cap]
             except Exception as e:
                 log.warning("skip %s: %s", d.location, e)
-                self.store.set_issue(name, clean(d.key), clean(d.location), clean(str(e)), d.mtime, d.size, pv)
+                self.store.set_issue(name, clean(d.key), clean(d.location), clean(str(e)), d.mtime, d.size, READER_GEN)
                 bad.add(d.key)
                 st["failed"] += 1
                 continue
@@ -148,13 +161,13 @@ class Indexer:
                                     "web_url": d.web_url}, rows)
             except Exception as e:               # un file che non si può salvare non deve fermare gli altri
                 log.warning("skip %s: %s", d.location, e)
-                self.store.set_issue(name, clean(d.key), clean(d.location), f"non salvabile: {e}", d.mtime, d.size, pv)
+                self.store.set_issue(name, clean(d.key), clean(d.location), f"non salvabile: {e}", d.mtime, d.size, READER_GEN)
                 bad.add(d.key)
                 st["failed"] += 1
                 continue
             if partial:
                 self.store.set_issue(name, d.key, d.location,
-                                     f"indicizzato solo in parte: primi {cap} frammenti ({reached})", d.mtime, d.size, pv)
+                                     f"indicizzato solo in parte: {reached} (file molto grande)", d.mtime, d.size, pv)
                 bad.add(d.key)
             st["new"] += 1
         for key, (doc_id, *_) in known.items():

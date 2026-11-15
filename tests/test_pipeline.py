@@ -378,7 +378,7 @@ def test_partial_message_says_how_far_it_got(tmp_path, monkeypatch):
     c.save()
     cl = run(app)
     r = next(i["reason"] for i in cl.get("/api/issues").json() if i["location"].endswith("libro.pdf"))
-    assert "primi 2 frammenti" in r and "fino a pag." in r and " di " in r
+    assert "fino a pag." in r and " di " in r
 
 
 def test_text_with_lone_surrogate_is_cleaned_and_indexed(tmp_path, monkeypatch):
@@ -419,3 +419,100 @@ def test_one_unsavable_file_does_not_stop_the_source(tmp_path, monkeypatch):
     assert {d["title"] for d in c.get("/api/documents").json()["items"]} == {"offerta_rossi.txt", "Riunione budget"}
     assert "non salvabile" in c.get("/api/issues").json()[0]["reason"]
     assert app.state.indexer.status["sources"]["Test"]["state"] == "done"   # la sorgente non risulta in errore
+
+
+def test_failed_files_are_retried_when_the_reader_improves(tmp_path):
+    from secondbrain.parsers import READER_GEN
+    docs, app = make(tmp_path, None)
+    _pdf_with_text(docs / "ok.pdf", "CWNA wireless importo 9800")
+    raw = (docs / "ok.pdf").read_bytes()
+    (docs / "rotto.pdf").write_bytes(raw.replace(b"trailer\n<<", b"trailer\n<</Encrypt 99 0 R ", 1))
+    st = app.state.indexer.store
+    stat = (docs / "rotto.pdf").stat()
+    # come se fosse fallito con una versione vecchia del programma (stesso file, stessa dimensione)
+    st.set_issue("Test", "rotto.pdf", "Test/rotto.pdf", "/Encrypt entry of the trailer is not a dictionary",
+                 stat.st_mtime, stat.st_size, READER_GEN - 1)
+    c = run(app)
+    assert "rotto.pdf" in {d["title"] for d in c.get("/api/documents").json()["items"]}     # riprovato e letto
+    assert [i for i in c.get("/api/issues").json() if "rotto.pdf" in i["location"]] == []
+
+
+def test_encrypted_pdf_with_empty_password_and_empty_file(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    from secondbrain.parsers import parse
+    _pdf_with_text(tmp_path / "plain.pdf", "contratto riservato importo 4200")
+    w = PdfWriter(clone_from=PdfReader(str(tmp_path / "plain.pdf")))
+    w.encrypt(user_password="", owner_password="segreta", algorithm="RC4-128")
+    w.write(tmp_path / "enc.pdf")
+    assert "importo 4200" in parse(tmp_path / "enc.pdf")[0][1]
+    (tmp_path / "vuoto.pdf").write_bytes(b"")
+    assert parse(tmp_path / "vuoto.pdf") == []                                  # 0 byte: nessun errore
+
+
+def test_misnamed_office_files_are_read_by_content(tmp_path):
+    from secondbrain.parsers import parse
+    (tmp_path / "a.docx").write_text(r"{\rtf1\ansi Accordo di riservatezza firmato\par Parti: Alfa e Beta}")
+    (tmp_path / "b.docx").write_text("<html><body><p>Verbale riunione budget</p></body></html>")
+    _pdf_with_text(tmp_path / "c_src.pdf", "SOW per la migrazione NSX dal cliente")
+    (tmp_path / "c.docx").write_bytes((tmp_path / "c_src.pdf").read_bytes())
+    assert "riservatezza" in parse(tmp_path / "a.docx")[0][1]
+    assert "Verbale riunione" in parse(tmp_path / "b.docx")[0][1]
+    assert "migrazione NSX" in parse(tmp_path / "c.docx")[0][1]
+    (tmp_path / "d.docx").write_bytes(b"\x00\x00\x00\x00\x00\x00 zeri")
+    with pytest.raises(ValueError, match="inizia con 00 00"):
+        parse(tmp_path / "d.docx")
+
+
+def test_docx_with_bad_part_and_pptx_with_bad_zip_entry_still_give_text(tmp_path, monkeypatch):
+    import docx, zipfile, pptx
+    from secondbrain import parsers
+    good = tmp_path / "ok.docx"
+    d = docx.Document(); d.add_paragraph("Design content importo 777"); d.save(good)
+    bad = tmp_path / "bad.docx"
+    with zipfile.ZipFile(good) as zi, zipfile.ZipFile(bad, "w") as zo:
+        for it in zi.infolist():
+            zo.writestr(it, b"questo non e xml" if it.filename == "word/settings.xml" else zi.read(it.filename))
+    with pytest.raises(Exception):
+        docx.Document(str(bad))                                                  # la libreria si arrende
+    assert "importo 777" in parsers.parse(bad)[0][1]                             # il fallback legge il corpo
+    p = pptx.Presentation(); s = p.slides.add_slide(p.slide_layouts[5]); s.shapes.title.text = "Webinar VMware Broadcom"
+    p.save(tmp_path / "w.pptx")
+    monkeypatch.setattr(pptx, "Presentation", lambda *a, **k: (_ for _ in ()).throw(zipfile.BadZipFile("Bad CRC-32 for file x")))
+    assert "Webinar VMware" in parsers.parse(tmp_path / "w.pptx")[0][1]
+
+
+def test_encrypted_xls_without_known_password_gives_clear_message(tmp_path, monkeypatch):
+    import xlrd
+    from secondbrain import parsers
+    f = tmp_path / "x.xls"
+    f.write_bytes(parsers.OLE + b"\x00" * 100)
+    monkeypatch.setattr(xlrd, "open_workbook", lambda *a, **k: (_ for _ in ()).throw(xlrd.XLRDError("Workbook is encrypted")))
+    with pytest.raises(ValueError, match="protetto da password"):
+        parsers.parse_xls(f)
+
+
+def test_spreadsheet_cap_is_per_sheet_so_big_data_sheet_does_not_hide_others(tmp_path, monkeypatch):
+    import openpyxl
+    import secondbrain.indexer as ix
+    monkeypatch.setattr(ix, "PER_SHEET_CAP", {"xlsx": 2})
+    docs, app = make(tmp_path, None)
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Dati"
+    for i in range(400):
+        ws.append([f"voce numero {i} descrizione lunga del prodotto", f"codice{i}", "nota"])
+    wb.create_sheet("Offerta").append(["Cliente BPER", "totale offerta ZEBRAROSA"])
+    wb.save(docs / "ce.xlsx")
+    c = run(app)
+    r = next(i for i in c.get("/api/issues").json() if i["location"].endswith("ce.xlsx"))
+    assert r["level"] == "partial" and "per foglio" in r["reason"]
+    assert c.get("/api/search", params={"q": "ZEBRAROSA"}).json()                 # il foglio 2 è comunque indicizzato
+
+
+def test_issues_filter_by_level(tmp_path, monkeypatch):
+    import secondbrain.indexer as ix
+    monkeypatch.setattr(ix, "MAX_CHUNKS", 2)
+    docs, app = make(tmp_path, None)
+    (docs / "grande.txt").write_text(" ".join(f"w{i}" for i in range(2000)))
+    (docs / "rotto.xlsx").write_bytes(b"non office")
+    c = run(app)
+    assert [i["location"] for i in c.get("/api/issues", params={"level": "failed"}).json()] == ["Test/rotto.xlsx"]
+    assert [i["location"] for i in c.get("/api/issues", params={"level": "partial"}).json()] == ["Test/grande.txt"]

@@ -170,10 +170,16 @@ class Store:
             self.db.execute("DELETE FROM issues WHERE source=? AND key=?", (source, key))
             self.db.commit()
 
-    def issues(self, source=None, limit=500):
-        sql, args = "SELECT source,key,location,reason,at FROM issues", []
+    def issues(self, source=None, limit=500, level=None):
+        sql, args, where = "SELECT source,key,location,reason,at FROM issues", [], []
         if source:
-            sql += " WHERE source=?"; args.append(source)
+            where.append("source=?"); args.append(source)
+        if level == "partial":
+            where.append("reason LIKE 'indicizzato solo in parte%'")
+        elif level == "failed":
+            where.append("reason NOT LIKE 'indicizzato solo in parte%'")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         with self.lock:
             rows = [dict(r) for r in self.db.execute(sql + " ORDER BY at DESC LIMIT ?", args + [limit])]
         for r in rows:

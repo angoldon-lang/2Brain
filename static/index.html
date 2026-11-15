@@ -169,9 +169,13 @@ function sourceCard(s){const l=s.live;let badge='<span class="badge">Non ancora 
   <div class="meta"><span><b>${fmt(s.documents)}</b> file indicizzati</span><span><b>${fmt(s.chunks)}</b> frammenti</span>
    ${l&&l.total?`<span><b>${fmt(l.processed)}</b> / ${fmt(l.total)} esaminati</span>`:''}${l&&l.unchanged?`<span><b>${fmt(l.unchanged)}</b> già aggiornati (saltati)</span>`:''}${l&&l.stale?`<span title="il lettore dei file è migliorato"><b>${fmt(l.stale)}</b> riletti per aggiornamento</span>`:''}${e?`<span><b>${e}</b></span>`:''}<span>aggiornata <b>${ago(s.last_indexed)}</b></span></div>
   <div class="kinds">${kinds}</div>`);
- if(s.issues||s.partial){const d=el('details','iss',`<summary>${s.issues?fmt(s.issues)+' non indicizzati':''}${s.issues&&s.partial?' · ':''}${s.partial?fmt(s.partial)+' parziali (file molto grandi)':''} — mostra il motivo</summary><ul><li>caricamento…</li></ul>`);
-  d.ontoggle=async()=>{if(!d.open)return;const r=await (await fetch('/api/issues?source='+encodeURIComponent(s.name))).json();
-   d.querySelector('ul').innerHTML=r.map(i=>`<li><em>${esc(i.location)}</em>${i.level==='partial'?'<b>Parziale:</b> ':''}${esc(i.reason)}</li>`).join('')+(r.length>=500?'<li>…(primi 500)</li>':'')};c.append(d)}
+ if(s.issues||s.partial){const d=el('details','iss',`<summary>${s.issues?fmt(s.issues)+' non indicizzati':'Nessun file non indicizzato'}${s.partial?' · '+fmt(s.partial)+' parziali (file molto grandi, restano ricercabili)':''} — mostra</summary><ul><li>caricamento…</li></ul>`);
+  const li=i=>`<li><em>${esc(i.location)}</em>${i.level==='partial'?'<b>Parziale:</b> ':''}${esc(i.reason)}</li>`;
+  d.ontoggle=async()=>{if(!d.open)return;const q='/api/issues?source='+encodeURIComponent(s.name)+'&level=';
+   const f=await (await fetch(q+'failed')).json(),ul=d.querySelector('ul');
+   ul.innerHTML=f.length?f.map(li).join(''):'<li>Nessuno: tutto ciò che si può leggere è indicizzato.</li>';
+   if(s.partial){const b=el('button','ghost','Mostra anche i '+fmt(s.partial)+' parziali');b.style.margin='8px 0';
+    b.onclick=async()=>{const p=await (await fetch(q+'partial')).json();ul.insertAdjacentHTML('beforeend',p.map(li).join('')+(p.length>=500?'<li>…(primi 500)</li>':''));b.remove()};d.append(b)}};c.append(d)}
  return c}
 function embBlock(){const E=S.embedding;if(!E)return '<div class="sc"><b>Ricerca per significato</b> <span class="badge err">non attiva</span><div class="meta" style="margin-top:6px">Ollama non risponde o manca il modello di embedding: funziona la ricerca per parole.</div></div>';
  const p=E.total?Math.floor(100*E.embedded/E.total):100;

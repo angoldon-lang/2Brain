@@ -221,8 +221,8 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         return store.runs()
 
     @app.get("/api/issues")
-    def issues(source: str | None = None):
-        return store.issues(source)
+    def issues(source: str | None = None, level: str | None = None):
+        return store.issues(source, level=level)
 
     @app.post("/api/reindex")
     def reindex():

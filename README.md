@@ -76,6 +76,12 @@ Due schede: **Chiedi** (chat con fonti e anteprima) e **Stato file** (per ogni s
 | **scansione senza testo / OCR** | PDF fatto di immagini. Su macOS l'OCR locale (Apple Vision) si installa con `pip install -e .` (pyobjc) e legge le prime 40 pagine. |
 | **protetto da password** | File Office con password vera: non leggibile. I file «sola lettura consigliata» invece si leggono. |
 | formato 97-2003 (.doc/.ppt) | Salvali come .docx/.pptx. |
+| **non è un file Office valido (… inizia con xx xx)** | Il contenuto non è Office. Se è RTF/HTML/PDF salvato come .docx lo leggo comunque; altrimenti il file è troncato o vuoto (i primi byte aiutano a capirlo). |
+| PDF «Reached maximum number of tokens», «EI stream», «Read stream length», «/Encrypt…» | Strutture rovinate o disegni CAD enormi: si usa un secondo lettore (PDFium). Se resta in errore, il PDF è realmente danneggiato. |
+| nessun testo riconosciuto neppure con OCR | Pagine-immagine illeggibili o bianche. |
+| «Workbook is encrypted» (.xls) | Si prova la password predefinita di Office; con una password vera non è leggibile. |
+
+I file **falliti** vengono riprovati automaticamente quando l'app migliora il modo di leggerli (generazione del lettore), senza toccare quelli già indicizzati. Nell'elenco della scheda Stato file i **parziali** stanno dietro un pulsante. I fogli Excel sono indicizzati con al massimo 30 frammenti per foglio (200 in tutto), così un foglio-dati enorme non nasconde gli altri.
 Righe di soli numeri nei fogli Excel e file vuoti (log, `__init__`…) vengono ignorati senza avviso. I file falliti **non** sono riprovati a ogni avvio, solo se cambiano o se migliora l'app.
 
 ### Escludere cartelle (privacy e rumore)
