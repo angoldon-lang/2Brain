@@ -63,8 +63,8 @@ class Searcher:
             out += [c for c in self.store.fts(" OR ".join(terms), pool, sources) if c not in seen]
         return out[:pool]
 
-    def search(self, query, k=8, sources=None, per_doc=2):
-        pool = k * 6
+    def search(self, query, k=8, sources=None, per_doc=2, date_from=None, date_to=None):
+        pool = k * (25 if (date_from is not None or date_to is not None) else 6)
         lex = self._lexical(query, pool, sources)
         vec = []
         if self.embedder is not None and self._n:
@@ -86,6 +86,9 @@ class Searcher:
             lo, hi = min(ts), max(ts)
             for cid, r in rows.items():
                 score[cid] *= 1 + 0.6 * ((r["mtime"] or 0) - lo) / (hi - lo or 1)
+        if date_from is not None or date_to is not None:                     # filtro per data di modifica del file
+            rows = {c: r for c, r in rows.items()
+                    if (date_from is None or (r["mtime"] or 0) >= date_from) and (date_to is None or (r["mtime"] or 0) <= date_to)}
         ranked = sorted((c for c in score if c in rows), key=score.get, reverse=True)
         out, count = [], {}
         for cid in ranked:

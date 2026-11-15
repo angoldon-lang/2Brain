@@ -5,6 +5,8 @@ data_dir = "~/.secondbrain"          # indice SQLite + cache PST
 host = "http://127.0.0.1:11434"
 chat_model = "qwen2.5:7b-instruct"   # su Mac 32GB+ prova "qwen2.5:14b-instruct"
 embed_model = "bge-m3"               # multilingue, ottimo per l'italiano
+num_ctx = 16384                      # quanto testo il modello "vede" per volta (più alto = più RAM). Il default di Ollama è ~4k
+temperature = 0.2                    # bassa = risposte più precise e meno inventate
 
 [server]
 host = "127.0.0.1"                   # NON esporre su rete

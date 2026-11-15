@@ -13,7 +13,8 @@ from .chunk import locate
 from .indexer import Indexer
 from .m365 import M365Auth
 from .parsers import grid_rows, parse
-from .llm import build_messages, stream_chat
+from .agent import Agent
+from .llm import ChatError, build_messages, chat_events, list_models, stream_chat
 from .search import Searcher, tokens
 
 STATIC = Path(__file__).resolve().parents[2] / "static"
@@ -80,6 +81,13 @@ def pick_path(kind: str):
         else 'choose file with prompt "Scegli l\'archivio Outlook (.pst)"'
     r = subprocess.run(["osascript", "-e", f"POSIX path of ({what})"], capture_output=True, text=True, timeout=600)
     return r.stdout.strip().rstrip("/") or None if r.returncode == 0 else None
+
+
+class ChatReq(BaseModel):
+    question: str
+    history: list[dict] = []
+    model: str | None = None
+    general: bool = True          # può integrare con la conoscenza generale, dichiarandolo
 
 
 class AskReq(BaseModel):
@@ -232,6 +240,47 @@ def create_app(cfg, embedder="auto") -> FastAPI:
     def search(q: str, k: int = 8, source: str | None = None):
         return searcher.search(q, k, [source] if source else None)
 
+    def opts():
+        return {"num_ctx": cfg.num_ctx, "temperature": cfg.temperature}
+
+    @app.get("/api/models")
+    def models():
+        try:
+            names = [m for m in list_models(cfg.ollama_host) if not any(x in m.lower() for x in ("embed", "bge", "nomic", "minilm"))]
+        except Exception:
+            names = []
+        return {"models": names, "default": cfg.chat_model}
+
+    @app.post("/api/chat")
+    def chat(req: ChatReq):
+        """Assistente con strumenti (cerca / legge i documenti). Eventi SSE: status, token, reset, sources, error."""
+        model = req.model or cfg.chat_model
+        agent = Agent(store, searcher, lambda msgs, tools: chat_events(cfg.ollama_host, model, msgs, tools, opts()))
+        sse = lambda ev: f"data: {json.dumps(ev, default=str)}\n\n"
+
+        def gen():
+            try:
+                for ev in agent.run(req.question, req.history, req.general):
+                    yield sse(ev)
+            except ChatError as e:
+                if e.no_tools:                                 # modello senza strumenti: ricerca semplice + risposta
+                    yield sse({"type": "status", "text": f"«{model}» non supporta gli strumenti: uso la ricerca semplice"})
+                    hits = searcher.search(req.question, cfg.top_k)
+                    yield sse({"type": "sources", "items": [dict(h, cited=False) for h in hits]})
+                    try:
+                        for tok in stream_chat(cfg.ollama_host, model, build_messages(req.question, hits, req.history), options=opts()):
+                            yield sse({"type": "token", "text": tok})
+                    except Exception as ex:
+                        yield sse({"type": "error", "text": str(ex)})
+                elif e.status == 404:
+                    yield sse({"type": "error", "text": f"Il modello «{model}» non è installato: esegui  ollama pull {model}"})
+                else:
+                    yield sse({"type": "error", "text": str(e)})
+            except Exception as ex:
+                yield sse({"type": "error", "text": f"Ollama non raggiungibile ({ex}). Controlla che sia avviato."})
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     @app.post("/api/ask")
     def ask(req: AskReq):
         hits = searcher.search(req.question, cfg.top_k, req.sources)
@@ -240,7 +289,7 @@ def create_app(cfg, embedder="auto") -> FastAPI:
         def gen():
             yield f"data: {json.dumps({'sources': hits})}\n\n"
             try:
-                for tok in stream_chat(cfg.ollama_host, cfg.chat_model, msgs):
+                for tok in stream_chat(cfg.ollama_host, cfg.chat_model, msgs, options=opts()):
                     yield f"data: {json.dumps({'token': tok})}\n\n"
             except Exception as ex:
                 yield f"data: {json.dumps({'error': f'Ollama non raggiungibile o modello assente: {ex}'})}\n\n"

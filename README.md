@@ -16,6 +16,20 @@ nano config.toml              # indica le tue sorgenti
 . .venv/bin/activate && secondbrain serve   # http://127.0.0.1:8765
 ```
 
+## L'assistente (non solo ricerca)
+La chat è un **assistente con strumenti**: il modello locale decide da solo cosa fare, in più passaggi, e poi risponde.
+1. `search_documents` — cerca nei tuoi file/mail, con parole diverse e filtro per data («le offerte del 2025»).
+2. `read_document` — apre un documento (pagina, foglio, slide) per controllare importi, date, clausole.
+3. Risponde in italiano, **cita le fonti [n]** (cliccabili: anteprima con il punto trovato) e per confronti/elenchi raccoglie prima tutti i documenti pertinenti.
+Vedi i passaggi mentre lavora («🔎 Cerco…», «📄 Leggo…»).
+
+- **Conoscenza generale** (casella sotto la chat, attiva di default): se i documenti non bastano lo dice e poi può rispondere con ciò che sa, etichettandolo «(conoscenza generale, non dai tuoi documenti)». Disattivala per risposte solo dai documenti.
+- **Domande di seguito** («e quella del 2024?») usano la conversazione.
+- **Modello**: selettore sotto la chat. Servono modelli che supportano gli *strumenti* (qwen2.5, qwen3, llama3.1, mistral-nemo…). Con altri modelli l'app ripiega da sola sulla ricerca semplice.
+  Più grande = ragiona meglio: **7B è il minimo**, con 32 GB di RAM prova `ollama pull qwen2.5:14b-instruct` (o 32b con 64 GB). I modelli piccoli a volte sbagliano a usare gli strumenti.
+- **Contesto** (`num_ctx` in `config.toml`, predefinito 16384): il valore predefinito di Ollama (~4k token) troncava in silenzio i prompt lunghi. Più alto = più RAM.
+- **Sicurezza**: gli strumenti sono di **sola lettura**; il testo dei documenti è trattato come dato, non come istruzioni (difesa di base dalla prompt injection; nessun modello è immune al 100%).
+
 ## Sorgenti (si gestiscono dalla scheda **Sorgenti**)
 | Sorgente | Come si aggiunge | Stato |
 |---|---|---|
