@@ -516,3 +516,29 @@ def test_issues_filter_by_level(tmp_path, monkeypatch):
     c = run(app)
     assert [i["location"] for i in c.get("/api/issues", params={"level": "failed"}).json()] == ["Test/rotto.xlsx"]
     assert [i["location"] for i in c.get("/api/issues", params={"level": "partial"}).json()] == ["Test/grande.txt"]
+
+
+def test_zero_byte_files_are_not_errors_for_any_type(tmp_path):
+    from secondbrain.parsers import parse
+    for name in ("a.docx", "b.xlsx", "c.pptx", "d.pdf", "e.xls"):
+        (tmp_path / name).write_bytes(b"")
+        assert parse(tmp_path / name) == []
+
+
+def test_damaged_pdf_falls_back_to_macos_reader_when_available(tmp_path, monkeypatch):
+    from secondbrain import ocr, parsers
+    f = tmp_path / "rotto.pdf"
+    f.write_bytes(b"%PDF-1.4 questo file e danneggiato e illeggibile per entrambi i lettori")
+    monkeypatch.setattr(ocr, "available", lambda: False)
+    with pytest.raises(ValueError, match="PDF non leggibile"):
+        parsers.parse(f)
+    monkeypatch.setattr(ocr, "available", lambda: True)
+    monkeypatch.setattr(ocr, "ocr_pdf", lambda p: [(1, "testo recuperato dal lettore di macOS")])
+    assert "recuperato" in parsers.parse(f)[0][1]
+
+
+def test_empty_office_file_leaves_no_warning(tmp_path):
+    docs, app = make(tmp_path, None)
+    (docs / "vuoto.docx").write_bytes(b"")
+    c = run(app)
+    assert c.get("/api/issues").json() == []

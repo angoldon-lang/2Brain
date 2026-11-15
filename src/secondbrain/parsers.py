@@ -13,7 +13,7 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 PARSER_VERSION = {"xlsx": 3, "xls": 3, "rtf": 2}
 # Diversa: alzare READER_GEN quando migliora la lettura dei file CHE FALLIVANO. Fa riprovare solo i file falliti
 # (pochi), senza toccare quelli già indicizzati bene.
-READER_GEN = 4
+READER_GEN = 5
 OLE = b"\xd0\xcf\x11\xe0"
 
 
@@ -210,6 +210,14 @@ def parse_pdf(path: Path) -> list[tuple[int, str]]:
         msg = " ".join(errors)
         if "password" in msg.lower() or "decrypt" in msg.lower():
             raise ValueError("PDF protetto da password: non leggibile")
+        from . import ocr
+        if ocr.available():                      # ultima risorsa: il lettore di macOS tollera PDF che gli altri rifiutano
+            try:
+                got = ocr.ocr_pdf(path)
+                if got:
+                    return got
+            except Exception as e:
+                errors.append(str(e))
         raise ValueError(f"PDF non leggibile: {errors[-1][:120] if errors else 'errore sconosciuto'}")
     from . import ocr
     if not ocr.available():
@@ -247,6 +255,8 @@ def grid_rows(path: Path, page: int) -> list[tuple[int, list[str]]]:
 
 def parse(path: Path) -> list[tuple[int, str]]:
     ext = path.suffix.lower()
+    if path.stat().st_size == 0:
+        return []               # file da 0 byte (di qualsiasi tipo): niente da leggere, non è un errore
     if ext == ".pdf":
         return parse_pdf(path)
     if ext in (".docx", ".xlsx", ".pptx"):
