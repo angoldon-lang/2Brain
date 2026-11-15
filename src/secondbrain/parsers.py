@@ -5,6 +5,7 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", module="openpyxl")
 logging.getLogger("pypdf").setLevel(logging.ERROR)
+logging.getLogger("extract_msg").setLevel(logging.ERROR)   # «Stream … not found»: bozze/messaggi senza alcuni campi
 
 # ATTENZIONE: alzare il numero di un tipo fa RIFARE tutti i file indicizzati di quel tipo (ore di lavoro).
 # Va fatto solo se i file già letti con successo sono letti MALE dal vecchio codice. I file che prima fallivano
